@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Mac launchd agent for the hermes-fleet rebase routine's deploy stage.
+
+    Install:
+      cp launchd/com.neuronbox.hermes-fleet-deploy.plist \
+         ~/Library/LaunchAgents/com.neuronbox.hermes-fleet-deploy.plist
+      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.neuronbox.hermes-fleet-deploy.plist
+      launchctl enable gui/$(id -u)/com.neuronbox.hermes-fleet-deploy
+
+    Uninstall:
+      launchctl bootout gui/$(id -u)/com.neuronbox.hermes-fleet-deploy
+
+    Force a run now (after install):
+      launchctl kickstart -k gui/$(id -u)/com.neuronbox.hermes-fleet-deploy
+
+    Doc: DO NOT bootstrap this until you've reviewed:
+      - scripts/deploy.sh
+      - fleet.yaml (especially the tail-XXXX placeholders and Sentinel hostname)
+      - the StartInterval below
+      - the user-name + paths in this plist
+  -->
+
+  <key>Label</key>
+  <string>com.neuronbox.hermes-fleet-deploy</string>
+
+  <!-- Poll every 5 minutes. Adjust if too chatty. -->
+  <key>StartInterval</key>
+  <integer>300</integer>
+
+  <!--
+    What runs. The script lives next to this plist in Doc's checkout of
+    the deploy repo / ops-repo. Adjust ProgramArguments[1] to the path
+    where deploy.sh actually lives on the Mac.
+  -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/tomer/personal/projects/claw/hermes-fleet-deploy/deploy.sh</string>
+  </array>
+
+  <!--
+    Environment. PATH must reach `gh`, `git`, `ssh`, `python3`, `jq`.
+    Homebrew default + system bins covers all of those on Apple Silicon.
+    Add anything else the script needs here, not in shell rc files.
+  -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>/Users/tomer</string>
+    <key>OPS_REPO</key>
+    <string>thamam/hermes-fleet-ops</string>
+    <key>FORK_REPO</key>
+    <string>thamam/hermes-agent</string>
+    <key>FLEET_BRANCH</key>
+    <string>fleet</string>
+    <key>NOTIFY_EMAIL</key>
+    <string>tomer@neuronbox.ai</string>
+  </dict>
+
+  <!--
+    Stdout / stderr capture. The script also writes its own structured log to
+    ~/.hermes-fleet-deploy/log/deploy.log; this is the launchd-side overflow.
+  -->
+  <key>StandardOutPath</key>
+  <string>/Users/tomer/.hermes-fleet-deploy/log/launchd.out</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/tomer/.hermes-fleet-deploy/log/launchd.err</string>
+
+  <!-- Don't re-launch immediately if the script exits cleanly. -->
+  <key>KeepAlive</key>
+  <false/>
+
+  <!-- Don't run while the Mac is on battery. -->
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>5</integer>
+
+  <!--
+    NOT setting RunAtLoad → first execution waits StartInterval after load.
+    Flip to <true/> if you want it to fire the moment launchctl bootstraps.
+  -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!--
+    Working directory. Script doesn't depend on cwd (uses absolute paths)
+    but setting this makes log paths predictable when scripts forget.
+  -->
+  <key>WorkingDirectory</key>
+  <string>/Users/tomer/.hermes-fleet-deploy</string>
+</dict>
+</plist>

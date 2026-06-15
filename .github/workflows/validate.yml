@@ -1,0 +1,33 @@
+name: validate-config
+
+# Merge gate for thamam/hermes-fleet-ops. Any PR that touches config files
+# or patches must pass schema + git-am-dry-run before it can land on main.
+
+on:
+  pull_request:
+    paths:
+      - "fleet.yaml"
+      - "stakeholders.yaml"
+      - "patches/**"
+      - "scripts/validate-config.py"
+      - ".github/workflows/validate.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install --quiet pyyaml
+
+      - name: Validate config (schema + patch dry-run)
+        run: python3 scripts/validate-config.py --repo-root .

@@ -1,0 +1,34 @@
+# stakeholders.yaml — who gets notified by the rebase routine, at what verbosity.
+#
+# Levels:
+#   heads-up    — fires on canary start (Mon)
+#   completion  — fires on full deploy done (Wed)
+#   breaking    — fires on any failure or rollback
+#
+# Day 1 design: Doc only. Easier to add later than retract. See v2 §7.3 + Appendix B.
+#
+# A stakeholder can have multiple channels (email + slack DM, etc.).
+# `breaking` always fires synchronously; `heads-up` and `completion` are best-effort.
+
+schema_version: 1
+
+stakeholders:
+  - id: doc
+    channels:
+      - email: tomer@neuronbox.ai
+    levels:
+      - completion
+      - breaking
+
+  # Future expansion — uncomment when ready. Do NOT enable on day 1.
+  #
+  # - id: ofer
+  #   channels:
+  #     - email: ofer@example.com   # TODO: real address
+  #   levels: [completion, breaking]
+  #
+  # - id: fleet-ops-slack
+  #   channels:
+  #     - slack:
+  #         channel: "#fleet-ops"
+  #   levels: [heads-up, completion, breaking]

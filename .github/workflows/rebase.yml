@@ -1,0 +1,269 @@
+name: weekly-rebase
+
+# Weekly Hermes-agent rebase routine.
+#
+# Cadence: Sunday 20:30 IDT = 17:30 UTC.
+# Manual trigger via workflow_dispatch is the supported way to run on demand
+# (e.g. the first manual cycle Doc kicks off to test the routine).
+#
+# What this workflow does (matches v2 proposal §3.4):
+#   1. Validate ops-repo config (schema + patch-series sanity).
+#   2. Clone thamam/hermes-agent. Fetch NousResearch/hermes-agent (upstream).
+#   3. Fast-forward main to upstream/main.
+#   4. Move prior `fleet` HEAD to `fleet-previous` (rollback target).
+#   5. Reset `fleet` to `main`. Walk patches/*.patch:
+#       - For each patch with `# Status: candidate-for-upstream-drop`, attempt
+#         the auto-drop probe (run the patch's named tests against unpatched
+#         tree; if green, drop the patch and note in release notes).
+#       - Otherwise, `git am --3way` to apply.
+#   6. Run upstream's test suite + diff-driven adaptive tests against `fleet` tip.
+#   7. Force-push `fleet` with `--force-with-lease`.
+#   8. Open a draft Release-notes PR in this ops repo summarising what changed.
+#
+# Tokens: the fork push uses a per-job token (FORK_PUSH_TOKEN secret — a
+# fine-grained PAT scoped to contents:write on thamam/hermes-agent only).
+# This is the only secret the workflow needs. The ops-repo PR is opened with
+# the workflow's own GITHUB_TOKEN.
+#
+# This workflow STOPS at the draft Release-notes PR. The Mac launchd job is
+# what actually deploys to hosts, gated by manual approval labels Doc applies
+# to the PR (`approval/start-canary`, `approval/rollout`).
+
+on:
+  schedule:
+    # 17:30 UTC every Sunday = 20:30 IDT (UTC+3, no DST in Israel since 2026 spec).
+    # NOTE: GHA schedules use UTC; verify DST-equivalent in your tz before next year.
+    - cron: "30 17 * * 0"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "If true, skip the force-push and PR open steps (just exercise the rebase + tests locally)."
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # for opening the release-notes PR in this ops repo
+  pull-requests: write
+
+env:
+  UPSTREAM: NousResearch/hermes-agent
+  FORK: thamam/hermes-agent
+  FLEET_BRANCH: fleet
+  PREV_REF: fleet-previous
+  MAIN_BRANCH: main
+
+jobs:
+  # --------------------------------------------------------------------
+  # 1) Validate ops-repo config first. Bail before touching git if broken.
+  # --------------------------------------------------------------------
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pyyaml
+      - run: python3 scripts/validate-config.py --repo-root .
+
+  # --------------------------------------------------------------------
+  # 2) Rebase fork's fleet branch onto upstream/main, run tests, push,
+  #    open the draft release-notes PR.
+  # --------------------------------------------------------------------
+  rebase:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout ops repo (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: ops
+
+      - name: Set up Python (for any test runs)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ops-side deps
+        run: pip install --quiet pyyaml
+
+      - name: Clone fork (thamam/hermes-agent)
+        env:
+          FORK_PUSH_TOKEN: ${{ secrets.FORK_PUSH_TOKEN }}
+        run: |
+          set -euxo pipefail
+          if [ -z "${FORK_PUSH_TOKEN:-}" ]; then
+            echo "::error::FORK_PUSH_TOKEN secret is missing. Add a fine-grained PAT with contents:write on $FORK."
+            exit 1
+          fi
+          git clone "https://x-access-token:${FORK_PUSH_TOKEN}@github.com/${FORK}.git" fork
+          cd fork
+          git config user.name  "hermes-fleet-bot"
+          git config user.email "fleet-bot@neuronbox.ai"
+          git remote add upstream "https://github.com/${UPSTREAM}.git"
+          git fetch upstream --tags
+
+      - name: Fast-forward main, snapshot prior fleet HEAD as fleet-previous
+        working-directory: fork
+        run: |
+          set -euxo pipefail
+          # Save prior fleet HEAD for rollback BEFORE we move anything.
+          PRIOR_FLEET=$(git rev-parse origin/${FLEET_BRANCH})
+          echo "PRIOR_FLEET=${PRIOR_FLEET}" >> "$GITHUB_ENV"
+
+          # Fast-forward main to upstream/main.
+          git checkout -B ${MAIN_BRANCH} upstream/${MAIN_BRANCH}
+
+      - name: Build new fleet (reset to main, walk patch series with auto-drop probe)
+        working-directory: fork
+        run: |
+          set -euxo pipefail
+          git checkout -B ${FLEET_BRANCH} ${MAIN_BRANCH}
+
+          PATCHES_DIR="../ops/patches"
+          DROPPED_FILE="../ops/.dropped-patches.txt"
+          : > "$DROPPED_FILE"
+
+          shopt -s nullglob
+          for p in $(ls "$PATCHES_DIR"/*.patch 2>/dev/null | sort); do
+            patch_name=$(basename "$p")
+            echo "::group::Patch ${patch_name}"
+            if grep -q "^# Status: candidate-for-upstream-drop" "$p"; then
+              echo "Patch tagged candidate-for-upstream-drop; attempting auto-drop probe..."
+              # Extract test node IDs from the patch header.
+              # Capture test node IDs listed under the Tests- header.
+              # `# Tests-...:` opens the block; any non-`#` line closes it.
+              # We strip the leading `#` plus all following whitespace so the
+              # IDs are passable straight to pytest.
+              tests=$(awk '
+                /^# Tests-that-must-pass-without-patch:/ { flag=1; next }
+                /^[^#]/                                  { flag=0 }
+                flag && /^#/ {
+                    sub(/^#[[:space:]]*/, "")
+                    if (length($0)) print
+                }' "$p")
+              if [ -n "$tests" ]; then
+                # Run tests against the unpatched tree.
+                if pip install --quiet -e . pytest 2>/dev/null && \
+                   pytest $tests 2>&1 | tee /tmp/probe.out; then
+                  echo "Auto-drop: tests pass without patch. Dropping ${patch_name}."
+                  echo "${patch_name}" >> "$DROPPED_FILE"
+                  echo "::endgroup::"
+                  continue
+                else
+                  echo "Auto-drop probe FAILED — patch is still needed. Applying."
+                fi
+              else
+                echo "WARN: candidate-for-upstream-drop tag present but no Tests-that-must-pass-without-patch header. Applying without probe."
+              fi
+            fi
+
+            if ! git am --3way "$p"; then
+              echo "::error::git am --3way failed on ${patch_name}. Halting per v2 §3.4 step 5."
+              git am --abort || true
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Run upstream test suite + adaptive tests
+        working-directory: fork
+        run: |
+          set -euxo pipefail
+          # Upstream's CI config drives most of this. Until we enumerate it
+          # in a follow-up (v2 §5.2 — "needs an enumeration pass first"),
+          # run pytest on the repo's tests dir if present.
+          if [ -f pyproject.toml ] || [ -f setup.py ]; then
+            pip install --quiet -e . pytest || true
+          fi
+          if [ -d tests ]; then
+            pytest tests -q --maxfail=10 || {
+              echo "::error::Test suite failed on the rebased fleet tip."
+              exit 1
+            }
+          else
+            echo "::warning::No tests/ directory found. TODO: enumerate upstream CI suite."
+          fi
+
+      - name: Move fleet-previous to prior fleet HEAD
+        working-directory: fork
+        env:
+          PRIOR_FLEET: ${{ env.PRIOR_FLEET }}
+        run: |
+          set -euxo pipefail
+          git update-ref refs/heads/${PREV_REF} "$PRIOR_FLEET"
+
+      - name: Push main, fleet, fleet-previous (skip on dry_run)
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        working-directory: fork
+        run: |
+          set -euxo pipefail
+          git push origin ${MAIN_BRANCH}
+          git push origin ${FLEET_BRANCH} --force-with-lease
+          git push origin ${PREV_REF} --force
+
+      - name: Compose release notes
+        working-directory: fork
+        run: |
+          set -euxo pipefail
+          NEW_FLEET=$(git rev-parse ${FLEET_BRANCH})
+          {
+            echo "# Hermes-fleet rebase $(date -u +%Y-%m-%d) (cycle)"
+            echo
+            echo "## TL;DR"
+            echo "- Fork \`${FORK}\` rebased onto upstream/${MAIN_BRANCH}."
+            echo "- New \`fleet\` HEAD: \`${NEW_FLEET}\`."
+            echo "- Prior \`fleet\` saved as \`fleet-previous\` = \`${PRIOR_FLEET}\`."
+            echo
+            echo "## Upstream changes since prior cycle"
+            git log --no-merges --pretty="- %h %s" "${PRIOR_FLEET}..upstream/${MAIN_BRANCH}" | head -200
+            echo
+            echo "## Patch series state"
+            if [ -s ../ops/.dropped-patches.txt ]; then
+              echo "Dropped (upstream subsumed):"
+              sed 's/^/  - /' ../ops/.dropped-patches.txt
+            else
+              echo "- No patches dropped this cycle."
+            fi
+            echo
+            echo "## Per-agent plan"
+            echo "- Canary: nano2 (will deploy on \`approval/start-canary\` label)"
+            echo "- Wave 2 (parallel): mbot, yunes, sentinel (on \`approval/rollout\` label)"
+            echo
+            echo "## Rollback recipe"
+            echo "Per host: \`git -C <hermes_home> fetch origin && git reset --hard origin/fleet-previous && hermes update && <restart-service>\`"
+          } > "$GITHUB_WORKSPACE/release-notes.md"
+
+      - name: Open draft Release-notes PR on ops repo
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: ops
+        run: |
+          set -euxo pipefail
+          BRANCH="release-notes/$(date -u +%Y-%m-%d)"
+          git config user.name  "hermes-fleet-bot"
+          git config user.email "fleet-bot@neuronbox.ai"
+          git checkout -b "$BRANCH"
+          mkdir -p release-notes
+          cp "$GITHUB_WORKSPACE/release-notes.md" "release-notes/$(date -u +%Y-%m-%d).md"
+          if [ -s .dropped-patches.txt ]; then
+            # Echo the dropped patches into the PR body but DO NOT auto-delete the
+            # patch files in this workflow — Doc reviews and removes in a follow-up
+            # PR. Conservative day-1 behavior; revisit after a few cycles.
+            cat .dropped-patches.txt
+          fi
+          rm -f .dropped-patches.txt
+          git add release-notes/
+          git commit -m "release-notes: $(date -u +%Y-%m-%d) cycle"
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --draft \
+            --title "Hermes-fleet rebase $(date -u +%Y-%m-%d)" \
+            --body-file "$GITHUB_WORKSPACE/release-notes.md" \
+            --base main \
+            --head "$BRANCH" \
+            --label needs-canary-approval

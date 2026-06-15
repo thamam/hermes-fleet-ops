@@ -1,0 +1,8 @@
+# Python bytecode (from local validator runs)
+__pycache__/
+*.pyc
+
+# Local-only state from deploy.sh runs (should never be in the ops repo,
+# but list them here in case Doc symlinks the deploy script's STATE_DIR.)
+.hermes-fleet-deploy/
+.dropped-patches.txt
