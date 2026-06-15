@@ -146,7 +146,7 @@ jobs:
                 }' "$p")
               if [ -n "$tests" ]; then
                 # Run tests against the unpatched tree.
-                if pip install --quiet -e .[all] 2>/dev/null && \
+                if pip install --quiet -e .[all,dev] 2>/dev/null && \
                    pytest $tests 2>&1 | tee /tmp/probe.out; then
                   echo "Auto-drop: tests pass without patch. Dropping ${patch_name}."
                   echo "${patch_name}" >> "$DROPPED_FILE"
@@ -176,7 +176,7 @@ jobs:
           # in a follow-up (v2 §5.2 — "needs an enumeration pass first"),
           # run pytest on the repo's tests dir if present.
           if [ -f pyproject.toml ] || [ -f setup.py ]; then
-            pip install --quiet -e .[all] || true
+            pip install --quiet -e .[all,dev] || true
           fi
           if [ -d tests ]; then
             pytest tests -q --maxfail=10 || {
