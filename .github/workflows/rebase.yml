@@ -89,6 +89,14 @@ jobs:
       - name: Install ops-side deps
         run: pip install --quiet pyyaml
 
+      - name: Install uv (for upstream-CI-equivalent test run)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            fork/pyproject.toml
+            fork/uv.lock
+
       - name: Clone fork (thamam/hermes-agent)
         env:
           FORK_PUSH_TOKEN: ${{ secrets.FORK_PUSH_TOKEN }}
@@ -145,9 +153,10 @@ jobs:
                     if (length($0)) print
                 }' "$p")
               if [ -n "$tests" ]; then
-                # Run tests against the unpatched tree.
-                if pip install --quiet -e .[all,dev] 2>/dev/null && \
-                   pytest $tests 2>&1 | tee /tmp/probe.out; then
+                # Run tests against the unpatched tree using upstream's CI-equivalent env:
+                # uv sync from uv.lock + extras [all,dev], then pytest via the venv.
+                if uv sync --locked --python 3.11 --extra all --extra dev >/dev/null 2>&1 && \
+                   ./.venv/bin/python -m pytest $tests 2>&1 | tee /tmp/probe.out; then
                   echo "Auto-drop: tests pass without patch. Dropping ${patch_name}."
                   echo "${patch_name}" >> "$DROPPED_FILE"
                   echo "::endgroup::"
@@ -168,23 +177,42 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Run upstream test suite + adaptive tests
+      - name: Run upstream test suite (CI-equivalent: uv + run_tests_parallel)
         working-directory: fork
+        env:
+          # Match upstream's tests.yml: prevent accidental real-API calls
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
         run: |
           set -euxo pipefail
-          # Upstream's CI config drives most of this. Until we enumerate it
-          # in a follow-up (v2 §5.2 — "needs an enumeration pass first"),
-          # run pytest on the repo's tests dir if present.
-          if [ -f pyproject.toml ] || [ -f setup.py ]; then
+          # Replicate upstream's .github/workflows/tests.yml invocation exactly:
+          # 1. uv sync --locked installs the exact pinned set from uv.lock
+          #    (reproducible) with the [all] + [dev] extras (which include
+          #    the messaging/slack/voice/vision groups our pip-based install
+          #    was missing).
+          # 2. scripts/run_tests_parallel.py spawns a fresh interpreter per
+          #    test file — upstream documented this as the fix for the
+          #    cross-file sys.modules.setdefault leakage that breaks discord
+          #    and vision_routing tests under single-process pytest.
+          # Both pieces are in upstream's tree as of every release on main.
+          if [ ! -f uv.lock ] || [ ! -f scripts/run_tests_parallel.py ]; then
+            echo "::warning::uv.lock or scripts/run_tests_parallel.py missing on this fleet tip — falling back to legacy pytest invocation."
             pip install --quiet -e .[all,dev] || true
-          fi
-          if [ -d tests ]; then
             pytest tests -q --maxfail=10 || {
-              echo "::error::Test suite failed on the rebased fleet tip."
+              echo "::error::Test suite failed on the rebased fleet tip (legacy path)."
               exit 1
             }
           else
-            echo "::warning::No tests/ directory found. TODO: enumerate upstream CI suite."
+            uv sync --locked --python 3.11 --extra all --extra dev
+            uv cache prune --ci || true
+            # No matrix slicing here — single job runs all ~850 files in
+            # parallel via the script's internal ThreadPoolExecutor.
+            # Wall-clock target: ~6-10 minutes on ubuntu-latest.
+            ./.venv/bin/python scripts/run_tests_parallel.py || {
+              echo "::error::Test suite failed on the rebased fleet tip (run_tests_parallel)."
+              exit 1
+            }
           fi
 
       - name: Move fleet-previous to prior fleet HEAD
