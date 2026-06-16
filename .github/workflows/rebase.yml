@@ -177,7 +177,7 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Run upstream test suite (CI-equivalent: uv + run_tests_parallel)
+      - name: Run upstream test suite — CI-equivalent uv + run_tests_parallel
         working-directory: fork
         env:
           # Match upstream's tests.yml: prevent accidental real-API calls
