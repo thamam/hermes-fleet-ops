@@ -1,74 +1,58 @@
-# fleet.yaml — Hermes agent fleet inventory.
-#
-# Source of truth for the rebase routine. The GHA workflow reads this file to
-# know which patches to carry; the launchd deploy agent reads this file to know
-# which hosts to SSH into. Adding or removing an agent = edit this file, PR,
-# merge — see scripts/validate-config.py for the schema rules enforced as a
-# merge gate.
-#
-# All values verified against live fleet on 2026-06-16.
-
 schema_version: 1
-
 agents:
-  - id: nano2
-    # ROG host, separate Hermes install under .hermes-nano2/. SSH via Doc's
-    # ~/.ssh/config alias `rog` which points at the Tailscale IP.
-    hostname: rog
-    ssh_user: thh3
-    hermes_home: /home/thh3/.hermes-nano2/hermes-agent
-    systemd_unit: hermes-nano2-gateway.service
-    systemd_scope: user
-    lane: fleet
-    canary: true
-    soak_hours: 24
-    channels_to_test:
-      - telegram
-      - slack
-    role: dev-host
-
-  - id: mbot
-    # ROG host, default Hermes install under .hermes/. Co-resident with nano2.
-    hostname: rog
-    ssh_user: thh3
-    hermes_home: /home/thh3/.hermes/hermes-agent
-    systemd_unit: hermes-gateway-mbot.service
-    systemd_scope: user
-    lane: fleet
-    canary: false
-    soak_hours: 24
-    channels_to_test:
-      - telegram
-      - slack
-    role: utility
-
-  - id: yunes
-    # Doc's Mac — same machine running this launchd plist.
-    # Use localhost over SSH for uniformity with the rest of the deploy path.
-    hostname: localhost
-    ssh_user: tomerhamam
-    hermes_home: /Users/tomerhamam/.hermes/hermes-agent
-    systemd_unit: ai.hermes.gateway
-    systemd_scope: launchd
-    lane: fleet
-    canary: false
-    soak_hours: 24
-    channels_to_test:
-      - telegram
-      - slack
-    role: primary
-
-  - id: sentinel
-    # EC2 host accessed via Tailscale SSH. Hostname `sentinel-agent` is the
-    # Tailscale MagicDNS name; ssh_user is the EC2 OS user.
-    hostname: sentinel-agent
-    ssh_user: ubuntu
-    hermes_home: /home/ubuntu/.hermes/hermes-agent
-    systemd_unit: hermes-gateway-sentinel.service
-    systemd_scope: user
-    lane: fleet
-    canary: false
-    soak_hours: 24
-    channels_to_test:
-      - telegram
-    role: signal-bot
+- id: nano2
+  hostname: rog
+  ssh_user: thh3
+  hermes_home: /home/thh3/.hermes-nano2/hermes-agent
+  systemd_unit: hermes-nano2-gateway.service
+  systemd_scope: user
+  lane: fleet
+  canary: true
+  soak_hours: 24
+  channels_to_test:
+  - telegram
+  - slack
+  role: dev-host
+- id: mbot
+  hostname: rog
+  ssh_user: thh3
+  hermes_home: /home/thh3/.hermes/hermes-agent
+  systemd_unit: hermes-gateway-mbot.service
+  systemd_scope: user
+  lane: fleet
+  canary: false
+  soak_hours: 24
+  channels_to_test:
+  - telegram
+  - slack
+  role: utility
+- id: yunes
+  hostname: localhost
+  ssh_user: tomerhamam
+  hermes_home: /Users/tomerhamam/.hermes/hermes-agent
+  systemd_unit: ai.hermes.gateway
+  systemd_scope: launchd
+  lane: fleet
+  canary: false
+  soak_hours: 24
+  channels_to_test:
+  - telegram
+  - slack
+  role: primary
+- id: sentinel
+  hostname: sentinel-agent
+  ssh_user: ubuntu
+  hermes_home: /home/ubuntu/.hermes/hermes-agent
+  systemd_unit: hermes-gateway-sentinel.service
+  systemd_scope: user
+  lane: fleet
+  canary: false
+  soak_hours: 24
+  channels_to_test:
+  - telegram
+  role: signal-bot
+known_adapters:
+- telegram
+- slack
+- whatsapp
+- email
