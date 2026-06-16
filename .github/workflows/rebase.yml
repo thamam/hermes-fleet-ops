@@ -209,7 +209,7 @@ jobs:
             # No matrix slicing here — single job runs all ~850 files in
             # parallel via the script's internal ThreadPoolExecutor.
             # Wall-clock target: ~6-10 minutes on ubuntu-latest.
-            ./.venv/bin/python scripts/run_tests_parallel.py --per-file-timeout 300 || {
+            ./.venv/bin/python scripts/run_tests_parallel.py --file-timeout 300 || {
               echo "::error::Test suite failed on the rebased fleet tip (run_tests_parallel)."
               exit 1
             }
