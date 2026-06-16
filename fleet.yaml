@@ -6,86 +6,69 @@
 # merge — see scripts/validate-config.py for the schema rules enforced as a
 # merge gate.
 #
-# Tailscale FQDNs: tailnet name is intentionally left as "tail-XXXX.ts.net"
-# until Doc fills it in once. Replacing the placeholder in this file is the
-# only place the tailnet name lives in the routine. Alternatively, use raw
-# Tailscale IPs — both are valid SSH targets.
-#
-# Last verified divergence survey: 2026-06-13 (see hermes-fleet-rebase-routine-2026-06-13-v2.md §1).
+# All values verified against live fleet on 2026-06-16.
 
 schema_version: 1
 
 agents:
   - id: nano2
-    # ROG host, separate hermes install under .hermes-nano2/. Tailscale IP 100.99.148.99.
-    hostname: rog.tail-XXXX.ts.net    # TODO(doc): replace tailnet placeholder, or use 100.99.148.99
+    # ROG host, separate Hermes install under .hermes-nano2/. SSH via Doc's
+    # ~/.ssh/config alias `rog` which points at the Tailscale IP.
+    hostname: rog
     ssh_user: thh3
     hermes_home: /home/thh3/.hermes-nano2/hermes-agent
-    systemd_unit: hermes-gateway-nano2.service   # user-mode; deploy runs `systemctl --user restart`
+    systemd_unit: hermes-nano2-gateway.service
     systemd_scope: user
     lane: fleet
-    canary: true                      # first in deploy order; exactly one agent must be canary
+    canary: true
     soak_hours: 24
     channels_to_test:
-      - slack
       - telegram
+      - slack
     role: dev-host
 
   - id: mbot
-    # ROG host, the default hermes install under .hermes/. Same Tailscale IP as nano2 (100.99.148.99) — co-resident.
-    hostname: rog.tail-XXXX.ts.net    # TODO(doc): replace tailnet placeholder, or use 100.99.148.99
+    # ROG host, default Hermes install under .hermes/. Co-resident with nano2.
+    hostname: rog
     ssh_user: thh3
     hermes_home: /home/thh3/.hermes/hermes-agent
-    systemd_unit: hermes-gateway.service   # TODO(doc): confirm actual unit name on ROG: `systemctl --user list-units | grep hermes`
+    systemd_unit: hermes-gateway-mbot.service
     systemd_scope: user
     lane: fleet
     canary: false
     soak_hours: 24
     channels_to_test:
-      - slack
       - telegram
+      - slack
     role: utility
 
   - id: yunes
-    # Doc's Mac — launchd plist runs ON this host, so deploy is effectively local.
-    # We still drive it via the same SSH path for uniformity (ssh tomer@localhost or via Tailscale).
-    hostname: mac.tail-XXXX.ts.net    # TODO(doc): replace tailnet placeholder, or use localhost
-    ssh_user: tomer
-    hermes_home: /Users/tomer/.hermes/hermes-agent
-    systemd_unit: ""                  # macOS: no systemd. Restart strategy below.
-    systemd_scope: launchd            # `launchctl kickstart -k gui/$UID/com.neuronbox.hermes-yunes` (TODO confirm label)
+    # Doc's Mac — same machine running this launchd plist.
+    # Use localhost over SSH for uniformity with the rest of the deploy path.
+    hostname: localhost
+    ssh_user: tomerhamam
+    hermes_home: /Users/tomerhamam/.hermes/hermes-agent
+    systemd_unit: ai.hermes.gateway
+    systemd_scope: launchd
     lane: fleet
     canary: false
     soak_hours: 24
     channels_to_test:
-      - slack
       - telegram
-    role: daily-driver
+      - slack
+    role: primary
 
   - id: sentinel
-    # EC2 instance, external-facing role (Ofer + possibly others). Inherited Yunes' tar-ship install.
-    hostname: sentinel-agent.tail-XXXX.ts.net   # TODO(doc): replace with actual Sentinel Tailscale FQDN or IP
+    # EC2 host accessed via Tailscale SSH. Hostname `sentinel-agent` is the
+    # Tailscale MagicDNS name; ssh_user is the EC2 OS user.
+    hostname: sentinel-agent
     ssh_user: ubuntu
     hermes_home: /home/ubuntu/.hermes/hermes-agent
-    systemd_unit: hermes-gateway.service   # TODO(doc): confirm actual unit name on Sentinel
-    systemd_scope: system             # system-mode systemd on EC2
+    systemd_unit: hermes-gateway-sentinel.service
+    systemd_scope: user
     lane: fleet
     canary: false
     soak_hours: 24
-    # Day-1 default per v2 Appendix A; TODO(doc): confirm against reference_sentinel.md before first cycle.
     channels_to_test:
-      - slack
-    role: external-facing
-
-# DB / Newron is intentionally NOT in this file — it sunsets before 2026-05-23 (Bedrock expiry)
-# and is not a hermes-agent host (OpenClaw framework). See project_bot_debrief_decision.md.
-
-# Known-adapter list — used by validate-config.py to verify channels_to_test entries.
-# Edit when a new adapter ships; new entries here unlock its use in agent channels_to_test.
-known_adapters:
-  - slack
-  - telegram
-  - whatsapp
-  - discord
-  - matrix
-  - cli
+      - telegram
+    role: signal-bot
