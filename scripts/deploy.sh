@@ -215,8 +215,70 @@ find_current_pr() {
     --jq '.[] | [.number, .headRefOid, ([.labels[].name] | join(","))] | @tsv'
 }
 
-# State markers — one per (PR-sha, stage). Stage = canary | rollout.
+# State markers — per-agent + per-stage + per-suffix.
+# Layout: $STATE_DIR/<head_sha>.<agent_id>.<stage>.<suffix>
+# Suffix = success | attempts | halted.
+agent_marker() { printf '%s' "$STATE_DIR/$1.$2.$3.$4"; }
+
+# Legacy alias retained for any caller; do not use in new code.
 stage_marker() { printf '%s' "$STATE_DIR/$1.$2"; }
+
+# Bounded retry budget per agent per stage before halt + HITL escalation.
+MAX_DEPLOY_ATTEMPTS=3
+
+agent_should_skip() {
+  local sha="$1" id="$2" stage="$3"
+  if [ -e "$(agent_marker "$sha" "$id" "$stage" success)" ]; then
+    log "[$id/$stage]: already succeeded; skipping"
+    return 0
+  fi
+  if [ -e "$(agent_marker "$sha" "$id" "$stage" halted)" ]; then
+    log "[$id/$stage]: HALTED awaiting HITL; skipping (rm the .halted file to retry)"
+    return 0
+  fi
+  return 1
+}
+
+agent_record_attempt() {
+  local sha="$1" id="$2" stage="$3"
+  local f="$(agent_marker "$sha" "$id" "$stage" attempts)"
+  local n=0
+  [ -e "$f" ] && n="$(cat "$f")"
+  n=$((n + 1))
+  echo "$n" > "$f"
+  printf '%s' "$n"
+}
+
+agent_record_success() {
+  : > "$(agent_marker "$1" "$2" "$3" success)"
+}
+
+agent_record_halt() {
+  local sha="$1" id="$2" stage="$3" pr_num="$4" reason="$5"
+  : > "$(agent_marker "$sha" "$id" "$stage" halted)"
+  log "[$id/$stage]: HALT after $MAX_DEPLOY_ATTEMPTS attempts — $reason"
+  gh pr comment "$pr_num" --repo "$OPS_REPO" --body     ":octagonal_sign: $id HALTED at stage $stage after $MAX_DEPLOY_ATTEMPTS failed attempts. Manual triage needed: see $LOG_DIR/deploy.log. Reason: $reason"     >/dev/null 2>&1 || true
+  gh pr edit "$pr_num" --repo "$OPS_REPO" --add-label "agent/$id/halted" >/dev/null 2>&1 || true
+  ping_doc "[hermes-fleet] $id halted PR#$pr_num"     "$id at stage $stage halted after $MAX_DEPLOY_ATTEMPTS attempts at $(ts). Reason: $reason. Manual triage needed."
+}
+
+agent_try_deploy() {
+  local sha="$1" id="$2" stage="$3" pr_num="$4"
+  if agent_should_skip "$sha" "$id" "$stage"; then return 0; fi
+  local attempt
+  attempt="$(agent_record_attempt "$sha" "$id" "$stage")"
+  log "[$id/$stage]: attempt $attempt of $MAX_DEPLOY_ATTEMPTS"
+  if deploy_one "$id"; then
+    agent_record_success "$sha" "$id" "$stage"
+    log "[$id/$stage]: SUCCESS on attempt $attempt"
+    return 0
+  fi
+  log "[$id/$stage]: FAILED on attempt $attempt"
+  if [ "$attempt" -ge "$MAX_DEPLOY_ATTEMPTS" ]; then
+    agent_record_halt "$sha" "$id" "$stage" "$pr_num" "deploy_one returned non-zero $attempt times in a row"
+  fi
+  return 1
+}
 
 # ----------------------------------------------------------------------
 # Email Doc (or whoever NOTIFY_EMAIL points at). Uses macOS `mail` if
