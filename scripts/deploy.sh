@@ -112,20 +112,36 @@ agent_record() {
 }
 
 # ----------------------------------------------------------------------
+
+# ----------------------------------------------------------------------
+# _ssh: special-case localhost so the script can deploy yunes without
+# needing a working SSH server on the Mac. For any non-localhost target
+# fall through to plain `ssh`.
+# ----------------------------------------------------------------------
+_ssh() {
+  local target="$1"; shift
+  local host="${target#*@}"
+  if [ "$host" = "localhost" ] || [ "$host" = "127.0.0.1" ]; then
+    bash -c "$*"
+  else
+    ssh "$target" "$@"
+  fi
+}
+
 # Restart-service helper. Branches on systemd_scope.
 # ----------------------------------------------------------------------
 restart_remote_service() {
   local ssh_target="$1" scope="$2" unit="$3"
   case "$scope" in
     user)
-      ssh "$ssh_target" "systemctl --user restart '$unit'"
+      _ssh "$ssh_target" "systemctl --user restart '$unit'"
       ;;
     system)
-      ssh "$ssh_target" "sudo systemctl restart '$unit'"
+      _ssh "$ssh_target" "sudo systemctl restart '$unit'"
       ;;
     launchd)
       # macOS: TODO(doc) — fill in launchctl label once Yunes' agent label is confirmed.
-      ssh "$ssh_target" "launchctl kickstart -k 'gui/\$(id -u)/com.neuronbox.hermes-yunes' || true"
+      _ssh "$ssh_target" "launchctl kickstart -k 'gui/\$(id -u)/$unit' || true"
       ;;
     *)
       die "unknown systemd_scope='$scope' for $ssh_target"
@@ -149,15 +165,15 @@ deploy_one() {
 
   # Snapshot prior SHA for the rollback recipe.
   local prior_sha
-  prior_sha="$(ssh "$ssh_target" "git -C '$hermes_home' rev-parse HEAD" || echo "unknown")"
+  prior_sha="$(_ssh "$ssh_target" "git -C '$hermes_home' rev-parse HEAD" || echo "unknown")"
   log "deploy[$id]: prior HEAD = $prior_sha"
 
   # Fetch + reset to origin/fleet, run hermes update, restart service.
-  ssh "$ssh_target" "set -e; \
+  _ssh "$ssh_target" "set -e; \
     cd '$hermes_home'; \
     git fetch --quiet origin; \
     git reset --hard 'origin/$FLEET_BRANCH'; \
-    hermes update --yes || hermes update;" \
+    $hermes_home/venv/bin/hermes update --yes || $hermes_home/venv/bin/hermes update;" \
     || { log "deploy[$id]: git fetch/reset/update failed"; return 11; }
 
   restart_remote_service "$ssh_target" "$scope" "$unit" \
@@ -165,11 +181,11 @@ deploy_one() {
 
   # ---------- Post-deploy minimum tests (v2 §6) ----------
   local new_sha
-  new_sha="$(ssh "$ssh_target" "git -C '$hermes_home' rev-parse HEAD" || echo "unknown")"
+  new_sha="$(_ssh "$ssh_target" "git -C '$hermes_home' rev-parse HEAD" || echo "unknown")"
   log "deploy[$id]: new HEAD = $new_sha"
 
   # 1. hermes --version
-  ssh "$ssh_target" "hermes --version" >> "$LOG_DIR/deploy.log" 2>&1 \
+  _ssh "$ssh_target" "$hermes_home/venv/bin/hermes --version" >> "$LOG_DIR/deploy.log" 2>&1 \
     || { log "deploy[$id]: hermes --version failed"; return 21; }
 
   # 2. gateway_state.json adapters connected
@@ -178,7 +194,7 @@ deploy_one() {
   #
   # TODO(doc): wire these to real test commands once the agent's CLI surface
   # is enumerated. Day-1 we run the version check and a basic config validate.
-  ssh "$ssh_target" "cd '$hermes_home' && hermes config validate || true" \
+  _ssh "$ssh_target" "cd '$hermes_home' && $hermes_home/venv/bin/hermes config validate || true" \
     >> "$LOG_DIR/deploy.log" 2>&1
 
   log "deploy[$id]: SUCCESS (HEAD $prior_sha -> $new_sha)"
