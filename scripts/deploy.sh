@@ -235,77 +235,73 @@ ping_doc() {
 # ----------------------------------------------------------------------
 do_canary() {
   local pr_num="$1" head_sha="$2"
-  local marker; marker="$(stage_marker "$head_sha" canary)"
-  [ -e "$marker" ] && { log "canary already deployed for $head_sha; skipping"; return 0; }
 
-  # Find the canary agent in fleet.yaml.
   local canary_id
   canary_id="$(list_agents_tsv | awk -F'\t' '$7=="true" {print $1; exit}')"
   [ -n "$canary_id" ] || die "no canary agent in fleet.yaml"
 
-  log "starting canary deploy to '$canary_id' for PR#$pr_num @$head_sha"
+  if agent_should_skip "$head_sha" "$canary_id" canary; then return 0; fi
 
-  if deploy_one "$canary_id"; then
-    : > "$marker"
+  log "starting canary deploy to '$canary_id' for PR#$pr_num @$head_sha"
+  if agent_try_deploy "$head_sha" "$canary_id" canary "$pr_num"; then
     gh pr comment "$pr_num" --repo "$OPS_REPO" \
-      --body ":white_check_mark: canary deploy to \`$canary_id\` succeeded @ $head_sha. Soaking 24h before rollout approval is honored."
+      --body ":white_check_mark: canary deploy to $canary_id succeeded @ $head_sha." || true
     gh pr edit "$pr_num" --repo "$OPS_REPO" --add-label "canary/healthy" || true
-  else
-    gh pr comment "$pr_num" --repo "$OPS_REPO" \
-      --body ":x: canary deploy to \`$canary_id\` **failed** @ $head_sha. Promotes halted. See \`$LOG_DIR/deploy.log\` on Doc's Mac."
-    gh pr edit "$pr_num" --repo "$OPS_REPO" --add-label "canary/failed" || true
-    ping_doc "[hermes-fleet] canary failed PR#$pr_num" \
-             "Canary deploy to $canary_id failed at $(ts). See $LOG_DIR/deploy.log."
-    return 1
+    return 0
   fi
+  gh pr edit "$pr_num" --repo "$OPS_REPO" --add-label "canary/failed" || true
+  return 1
 }
+
 
 do_rollout() {
   local pr_num="$1" head_sha="$2"
-  local marker; marker="$(stage_marker "$head_sha" rollout)"
-  [ -e "$marker" ] && { log "rollout already deployed for $head_sha; skipping"; return 0; }
 
-  # Require canary marker present + canary/healthy label, lest we deploy ahead of canary.
-  local canary_marker; canary_marker="$(stage_marker "$head_sha" canary)"
-  [ -e "$canary_marker" ] || die "rollout requested but canary marker missing for $head_sha — refusing to deploy"
+  local canary_id
+  canary_id="$(list_agents_tsv | awk -F'\t' '$7=="true" {print $1; exit}')"
+  [ -n "$canary_id" ] || die "no canary agent in fleet.yaml"
+  local canary_success; canary_success="$(agent_marker "$head_sha" "$canary_id" canary success)"
+  [ -e "$canary_success" ] || die "rollout requested but canary $canary_id has no success marker for $head_sha"
 
-  # All non-canary agents.
   local ids
   ids="$(list_agents_tsv | awk -F'\t' '$7!="true" {print $1}')"
-
   log "starting rollout for PR#$pr_num @$head_sha — agents: $(echo "$ids" | tr '\n' ' ')"
 
   local pids=()
-  local failed_any=0
   for id in $ids; do
     (
-      # Subshell per agent — these run in parallel.
-      if deploy_one "$id"; then
-        log "rollout[$id]: ok"; exit 0
-      else
-        log "rollout[$id]: FAIL"; exit 1
+      if agent_try_deploy "$head_sha" "$id" rollout "$pr_num"; then exit 0
+      else exit 1
       fi
     ) >> "$LOG_DIR/deploy.log" 2>&1 &
     pids+=("$!")
   done
   for pid in "${pids[@]}"; do
-    wait "$pid" || failed_any=1
+    wait "$pid" || true
   done
 
-  if [ "$failed_any" -eq 0 ]; then
-    : > "$marker"
+  local all_ok=1
+  for id in $ids; do
+    [ -e "$(agent_marker "$head_sha" "$id" rollout success)" ] || { all_ok=0; break; }
+  done
+
+  if [ "$all_ok" -eq 1 ]; then
     gh pr comment "$pr_num" --repo "$OPS_REPO" \
-      --body ":white_check_mark: rollout deploy to non-canary agents succeeded @ $head_sha. Soaking 24h before the release-notes email fires."
+      --body ":white_check_mark: rollout: every non-canary agent succeeded @ $head_sha." || true
     gh pr edit "$pr_num" --repo "$OPS_REPO" --add-label "rollout/healthy" || true
-  else
-    gh pr comment "$pr_num" --repo "$OPS_REPO" \
-      --body ":x: rollout deploy had one or more failures @ $head_sha. Promotes halted. See \`$LOG_DIR/deploy.log\` on Doc's Mac."
-    gh pr edit "$pr_num" --repo "$OPS_REPO" --add-label "rollout/failed" || true
-    ping_doc "[hermes-fleet] rollout failed PR#$pr_num" \
-             "Rollout deploy had one or more failures at $(ts). See $LOG_DIR/deploy.log."
-    return 1
+    return 0
   fi
+
+  local any_halted=0
+  for id in $ids; do
+    [ -e "$(agent_marker "$head_sha" "$id" rollout halted)" ] && { any_halted=1; break; }
+  done
+  if [ "$any_halted" -eq 1 ]; then
+    gh pr edit "$pr_num" --repo "$OPS_REPO" --add-label "rollout/failed" || true
+  fi
+  return 1
 }
+
 
 # ----------------------------------------------------------------------
 # Main
