@@ -246,7 +246,7 @@ jobs:
             echo "- Prior \`fleet\` saved as \`fleet-previous\` = \`${PRIOR_FLEET}\`."
             echo
             echo "## Upstream changes since prior cycle"
-            git log --no-merges --pretty="- %h %s" "${PRIOR_FLEET}..upstream/${MAIN_BRANCH}" | head -200
+            git log --no-merges -n 200 --pretty="- %h %s" "${PRIOR_FLEET}..upstream/${MAIN_BRANCH}"
             echo
             echo "## Patch series state"
             if [ -s ../ops/.dropped-patches.txt ]; then
