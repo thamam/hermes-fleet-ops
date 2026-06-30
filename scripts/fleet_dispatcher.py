@@ -59,7 +59,7 @@ STATUS_RE = re.compile(
     r"(how are you"
     r"|are you (up|there|alive|ok|online|working)"
     r"|you (still )?(there|up|alive|online|ok)\b"
-    r"|what'?s your status|status check|status\?"
+    r"|what'?s your status|status\?"
     r"|still (there|alive|running|up)"
     r"|\bping\?|\bsitrep\?|send sitrep)",
     re.IGNORECASE,
@@ -366,22 +366,24 @@ def _significant_words(text: str) -> set:
 
 def count_untracked(candidates: list, open_tasks: list) -> int:
     """Best-effort: a candidate inbound line counts as untracked unless some open
-    task title covers it. A title covers a candidate when they share a
-    work-identifying word AND every numeric token in the candidate also appears in
-    that same title — so "ship PR 8" is not covered by "PR 9" merely via "pr".
-    Matches whole tokens (not substring) so short acronyms don't false-match; a
-    candidate with no significant tokens is surfaced (erring toward discipline)."""
+    task title covers it. A title covers a candidate when it shares a MAJORITY of
+    the candidate's work-identifying words AND contains every numeric token the
+    candidate names. The majority rule means a single shared generic word is not
+    enough ("deploy mobile app" is not covered by "deploy backend"), while a
+    fully-overlapping short request still matches ("fix CI" -> "Fix CI"). Whole
+    tokens are matched (not substring); a candidate with no significant tokens is
+    surfaced. This is a heuristic — it can't perfectly judge semantic coverage."""
     title_sets = [_significant_words(str(t.get("title", ""))) for t in open_tasks]
     untracked = 0
     for line in candidates:
         words = _significant_words(line)
+        if not words:
+            untracked += 1
+            continue
         nums = {w for w in words if w.isdigit()}
-        non_num = words - nums
-        # A title covers the candidate if it shares a non-numeric word AND
-        # contains every numeric token the candidate names (so "PR 8" needs the
-        # title to have both "pr" and "8", not just one of them).
-        covered = bool(non_num) and any(
-            (non_num & ts) and nums <= ts for ts in title_sets
+        need = (len(words) + 1) // 2  # majority of the candidate's tokens
+        covered = any(
+            len(words & ts) >= need and nums <= ts for ts in title_sets
         )
         if not covered:
             untracked += 1

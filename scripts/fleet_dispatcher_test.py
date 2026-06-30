@@ -204,6 +204,19 @@ def test_count_untracked_numbered_pr_must_match():
     assert fd.count_untracked(["ship PR 8"], [{"title": "PR 8"}]) == 0
 
 
+def test_count_untracked_single_shared_verb_not_enough():
+    # Codex round-10 P2: a single shared generic word is not coverage.
+    assert fd.count_untracked(["deploy mobile app"], [{"title": "deploy backend"}]) == 1
+    assert fd.count_untracked(["deploy mobile app"], [{"title": "deploy mobile app"}]) == 0
+
+
+def test_scan_gateway_log_keeps_work_mentioning_status_check():
+    # Codex round-10 P2: "fix the status check endpoint" is work, not a heartbeat.
+    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    text = "2026-06-30T11:59:00 inbound message from telegram: fix the status check endpoint\n"
+    assert fd.scan_gateway_log(text, now) == ["fix the status check endpoint"]
+
+
 def test_scan_gateway_log_drops_old_lines():
     now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
     text = "2026-06-30T09:00:00 inbound message from telegram: old work request\n"
