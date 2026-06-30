@@ -77,10 +77,12 @@ STOPWORDS = frozenset({
     "would", "telegram", "whatsapp", "signal", "slack", "discord", "gateway",
     "agent", "user", "this", "that", "with", "your", "have", "need", "want",
     "there", "here", "about", "hello",
-    # short filler — kept out so 2+ char acronyms (CI, DB, UI, PR, QA) survive
-    "fix", "new", "the", "run", "add", "see", "get", "for", "and", "not",
-    "but", "was", "can", "all", "any", "out", "off", "via", "let", "its",
-    "has", "you", "are",
+    # grammatical filler — kept out so 2+ char acronyms (CI, DB, UI, PR, QA)
+    # survive. Action verbs (fix/add/run/deploy/...) are deliberately NOT here:
+    # they distinguish intent ("fix backend" vs "deploy backend") and must take
+    # part in matching.
+    "new", "the", "for", "and", "not", "but", "was", "can", "all", "any",
+    "out", "off", "via", "let", "its", "has", "you", "are",
 })
 
 
@@ -612,6 +614,11 @@ def main(argv=None) -> int:
         # Keep titles of recently-completed tasks (within the gateway window) so a
         # closed task still covers its in-window log line on later ticks, not just
         # the run that saw it close. Prune expired entries each run.
+        # Accepted best-effort tradeoff: because candidates are payload text only,
+        # an identical *new* request within an hour of completing that work is
+        # indistinguishable from the original log line and is treated as covered.
+        # We prefer that rare miss over re-flagging completed work as untracked on
+        # every tick for an hour (cry-wolf noise that erodes the signal).
         recent_done = [e for e in state.get("recent_done", [])
                        if isinstance(e, dict) and _within_window(e.get("ts", ""), GATEWAY_WINDOW_SEC)]
         for tid in changes["done"]:

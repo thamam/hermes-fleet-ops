@@ -262,6 +262,13 @@ def test_count_untracked_numbered_pr_must_match():
     assert fd.count_untracked(["ship PR 8"], [{"title": "PR 8"}]) == 0
 
 
+def test_count_untracked_action_verb_distinguishes():
+    # Codex round-25 P2: "fix backend" is not covered by "deploy backend" — the
+    # verb participates in matching.
+    assert fd.count_untracked(["fix backend"], [{"title": "deploy backend"}]) == 1
+    assert fd.count_untracked(["fix backend"], [{"title": "fix backend"}]) == 0
+
+
 def test_count_untracked_single_shared_verb_not_enough():
     # Codex round-10 P2: a single shared generic word is not coverage.
     assert fd.count_untracked(["deploy mobile app"], [{"title": "deploy backend"}]) == 1
