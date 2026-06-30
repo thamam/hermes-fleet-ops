@@ -37,6 +37,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -491,9 +492,10 @@ def main(argv=None) -> int:
                 all_good.extend(good)
                 all_bad.extend(bad)
             open_total = len(all_good)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError,
-                json.JSONDecodeError, ValueError):
-            # Network/parse failure: don't fail the cron. Report and retry next tick.
+        except (urllib.error.URLError, urllib.error.HTTPError, http.client.HTTPException,
+                TimeoutError, OSError, json.JSONDecodeError, ValueError):
+            # Network/parse failure (incl. partial reads / IncompleteRead): don't
+            # fail the cron. Report vik_unreachable and retry next tick.
             vik_unreachable = True
 
         if vik_unreachable:

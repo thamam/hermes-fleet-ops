@@ -326,6 +326,23 @@ def test_main_vik_unreachable_exits_zero(monkeypatch, tmp_path, capsys):
     assert out["vik_unreachable"] is True
 
 
+def test_main_incomplete_read_is_vik_unreachable(monkeypatch, tmp_path, capsys):
+    # Codex round-12 P2: a partial HTTP read must fail closed, not crash the cron.
+    _env(monkeypatch, tmp_path)
+    fd.save_state(tmp_path / "state" / "state.json", {"tasks": {"1": {"updated": "x"}}})
+
+    def partial(url, token):
+        import http.client
+        raise http.client.IncompleteRead(b"")
+
+    monkeypatch.setattr(fd, "_http_get_json", partial)
+    rc = fd.main([])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["vik_unreachable"] is True
+    assert fd.load_state(tmp_path / "state" / "state.json")["tasks"] == {"1": {"updated": "x"}}
+
+
 def test_main_quarantines_malformed_task(monkeypatch, tmp_path, capsys):
     _env(monkeypatch, tmp_path)
     served = {1: [[{"id": None, "title": "bad"}, {"id": 8, "title": "ok"}]]}
