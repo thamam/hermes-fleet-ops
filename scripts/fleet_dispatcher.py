@@ -430,7 +430,7 @@ def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_
         core = payload.strip(" \t'\"-—:.?!")
         if not payload or STATUS_RE.fullmatch(core):
             continue
-        hits.append(payload[:200])
+        hits.append(payload)  # full payload; callers truncate only for display
     return hits
 
 
@@ -631,7 +631,13 @@ def main(argv=None) -> int:
             title = prev_entry.get("title", "") if isinstance(prev_entry, dict) else ""
             if title:
                 recent_done.append({"title": title, "ts": now_iso()})
-        coverage = all_good + [{"title": e["title"]} for e in recent_done]
+        # Coverage = current open tasks + prior-snapshot titles (covers
+        # carried-forward/quarantined tasks still tracked but absent from
+        # all_good) + recently-completed titles (cross-tick).
+        coverage = (all_good
+                    + [{"title": v.get("title", "")}
+                       for v in prev_tasks.values() if isinstance(v, dict)]
+                    + [{"title": e["title"]} for e in recent_done])
         untracked = count_untracked(candidates, coverage)
 
         # Carry forward known-but-malformed tasks so a transient bad record never
@@ -665,7 +671,7 @@ def main(argv=None) -> int:
             for entry in all_bad:
                 print(f"  [QUARANTINE] #{entry['id']}: {entry['reason']}", file=sys.stderr)
             for c in candidates:
-                print(f"  [UNTRACKED?] {c}", file=sys.stderr)
+                print(f"  [UNTRACKED?] {c[:200]}", file=sys.stderr)
         return 0
     finally:
         release_lock(lock_dir)

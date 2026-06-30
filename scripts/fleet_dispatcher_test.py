@@ -401,6 +401,17 @@ def test_scan_gateway_log_status_phrase_midwork_kept():
     assert hits == ["fix the send sitrep command", "update the what's your status handler"]
 
 
+def test_scan_gateway_log_keeps_full_payload_for_matching():
+    # Codex round-27 P2: long payloads aren't truncated before matching.
+    now = datetime(2026, 6, 30, 12, 0, 0)
+    tail = "x" * 250
+    text = f"2026-06-30T11:59:00 inbound message from telegram: {tail} deploy mars rover\n"
+    hits = fd.scan_gateway_log(text, now)
+    assert hits[0].endswith("deploy mars rover")  # not truncated to 200
+    # words past char 200 are retained, so an existing task still covers it
+    assert fd.count_untracked(hits, [{"title": "deploy mars rover"}]) == 0
+
+
 def test_scan_gateway_log_local_naive_now_window():
     # Codex round-19 P2: a naive log ts compared to local wall-clock now. A line
     # ~30 min old is kept; the comparison must not be skewed by host UTC offset.
@@ -653,6 +664,25 @@ def test_main_completed_task_not_done_and_untracked(monkeypatch, tmp_path, capsy
     out = json.loads(capsys.readouterr().out.strip())
     assert out["noticed_done"] == 1
     assert out["untracked_candidates"] == 0  # covered by the just-completed task
+
+
+def test_main_carried_forward_task_covers_untracked(monkeypatch, tmp_path, capsys):
+    # Codex round-27 P2: a malformed/carried-forward tracked task must still cover
+    # its in-window gateway line (not absent from coverage just because it's not
+    # in all_good this run).
+    _env(monkeypatch, tmp_path)
+    fd.save_state(tmp_path / "state" / "state.json",
+                  {"tasks": {"5": {"updated": "2026-06-30T10:00:00Z", "title": "deploy the rover"}}})
+    log = tmp_path / "logs" / "gateway.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("inbound message from telegram: deploy the rover\n")
+    # task 5 comes back malformed (bad due_date) -> quarantined + carried forward
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: [{"id": 5, "title": "deploy the rover", "due_date": "bad"}])
+    fd.main([])
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["quarantined"] == 1
+    assert out["untracked_candidates"] == 0  # carried-forward task covers the line
 
 
 def test_main_completed_task_coverage_persists_next_tick(monkeypatch, tmp_path, capsys):
