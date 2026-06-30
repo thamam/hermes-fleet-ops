@@ -186,4 +186,108 @@ fleet.
 
 ---
 
+## 7. Fleet dispatcher (Vik 1:1 discipline)
+
+`scripts/fleet_dispatcher.py` is a canonical, per-agent dispatcher that keeps an
+agent's Vikunja board in 1:1 sync with its real work. It is the generalized
+Vik-discipline core of Nigel's `neuronbox_dispatcher.py` (no lander, merge-gate,
+truth-probe, or parallel-lanes machinery — just board sync).
+
+### What it does
+
+Each run (idempotent, safe every 5–15 min):
+
+1. Fetches open tasks from each assigned Vik project via the Vikunja API.
+2. Quarantines malformed tasks (missing/null `id`, unparseable `due_date`) so a
+   bad record can't crash the run — the 2026-06-27 watchdog-crash pattern.
+3. Diffs against last run → `noticed_new` / `noticed_done` / `noticed_updates`.
+4. Best-effort scans the last hour of the gateway log for inbound work that no
+   open task seems to carry → `untracked_candidates` (ignores status-check
+   chatter, so it won't false-positive on "what's your status?").
+5. Persists state atomically and emits one JSON sitrep line to stdout.
+
+The cron runs it `--deliver origin --no-agent`, so stdout goes straight back to
+the agent with zero LLM calls. Sample sitrep:
+
+```json
+{"ts":"2026-06-30T12:00:00Z","profile":"sentinel","projects":[4],"open_tasks":1,"noticed_new":0,"noticed_done":0,"noticed_updates":1,"untracked_candidates":0,"quarantined":0}
+```
+
+Always exits 0 — a transient Vik outage emits `"vik_unreachable": true` and
+relies on the next interval to retry, rather than failing the cron.
+
+### Install on a new agent
+
+1. Copy the script to **`${HERMES_HOME}/scripts/fleet_dispatcher.py`**. The Hermes
+   cron `no_agent` runner only executes scripts under `${HERMES_HOME}/scripts`, so
+   it must live there (not pulled to an arbitrary repo path). It is stdlib-only
+   (Python 3.10+) — no pip install needed.
+   ```bash
+   mkdir -p "${HERMES_HOME}/scripts"
+   cp scripts/fleet_dispatcher.py "${HERMES_HOME}/scripts/fleet_dispatcher.py"
+   ```
+   (If you wire it to **system cron** instead of the Hermes cron, this path
+   constraint does not apply — run it from wherever you keep the ops repo.)
+2. Find the agent's owned Vik project id(s) (the project lane in the Vik board).
+3. Set the env vars (below) in the agent's cron environment.
+4. Dry-run once by hand and confirm a single JSON sitrep line:
+   ```bash
+   HERMES_PROFILE_NAME=sentinel HERMES_HOME=/home/ubuntu/.hermes/profiles/sentinel \
+   VIKUNJA_API_URL=... VIKUNJA_API_TOKEN=... FLEET_DISPATCHER_PROJECT_IDS=4 \
+   python3 "${HERMES_HOME}/scripts/fleet_dispatcher.py" --verbose
+   ```
+5. Wire the three cron entries (below), pointing at
+   `${HERMES_HOME}/scripts/fleet_dispatcher.py`.
+
+### Env vars
+
+| Var                            | Required | Meaning                                                        |
+|--------------------------------|----------|----------------------------------------------------------------|
+| `HERMES_PROFILE_NAME`          | yes      | agent name, e.g. `sentinel`, `mbot`, `yunes`                   |
+| `HERMES_HOME`                  | yes      | profile root, e.g. `/home/ubuntu/.hermes/profiles/sentinel`    |
+| `VIKUNJA_API_TOKEN`            | yes      | bearer token — NEVER printed to stdout/logs                    |
+| `VIKUNJA_API_URL`              | yes      | base URL, e.g. `https://vik.example/api/v1`                    |
+| `FLEET_DISPATCHER_PROJECT_IDS` | yes      | comma-separated project ids, e.g. `4` or `2,3`                 |
+| `FLEET_DISPATCHER_STATE_DIR`   | no       | default `${HERMES_HOME}/state/fleet_dispatcher`               |
+| `FLEET_DISPATCHER_GATEWAY_LOG` | no       | default `${HERMES_HOME}/logs/gateway.log`                     |
+
+### Cron schedule (same cadence as Nigel)
+
+| Cadence | Purpose                      |
+|---------|------------------------------|
+| 15 min  | triage — routine board sync  |
+| 5 min   | utilization — tighter sync   |
+| 3 h     | self-audit                   |
+
+All three invoke the same idempotent script; the lock (below) makes overlapping
+fires safe. Run them via the cron's `--deliver origin --no-agent` mode.
+
+### Safety properties
+
+- Token never printed. All state writes are atomic (tmp + rename).
+- Lock dir `${STATE_DIR}/.lock` (atomic `mkdir`) prevents concurrent runs, with
+  a 60s stale-lock breakaway.
+- Quarantine list persists in `${STATE_DIR}/quarantined.json` across runs.
+
+### Troubleshooting
+
+- **`"vik_unreachable": true` every run** — check `VIKUNJA_API_URL` reachability
+  and that `VIKUNJA_API_TOKEN` is valid. The script never fails the cron on this.
+- **`"config_error"` in the sitrep** — `FLEET_DISPATCHER_PROJECT_IDS` is unset or
+  blank. The run fails closed (state is left untouched, nothing marked done) until
+  the env var is set.
+- **No sitrep / second run silent** — a prior run may hold the lock. The lock
+  records its owner pid; a crashed run's lock self-clears on the next invocation
+  (dead owner), and an orphaned lock with no readable owner clears after 60s. A
+  live run is never broken, however long it takes. To force-clear:
+  `rm -rf ${STATE_DIR}/.lock`.
+- **Tasks keep getting quarantined** — inspect `${STATE_DIR}/quarantined.json`;
+  fix the offending task's `due_date` or `id` in the Vik board.
+- **`untracked_candidates` noisy** — the gateway scan is best-effort heuristic;
+  it only flags inbound, non-status lines from the last hour. Tune by ensuring
+  real work opens a Vik task promptly (which is the whole point).
+- **Run the tests**: `pytest scripts/fleet_dispatcher_test.py -q`.
+
+---
+
 *Update this file whenever the routine's behavior changes.*
