@@ -544,13 +544,15 @@ def main(argv=None) -> int:
     # an argparse exit-2 with no sitrep, which would break the cron contract.
     args, _ = parser.parse_known_args(argv)
 
-    profile = os.environ.get("HERMES_PROFILE_NAME", "unknown")
+    profile = os.environ.get("HERMES_PROFILE_NAME", "").strip()
     hermes_home = os.environ.get("HERMES_HOME", "").strip()
     token = os.environ.get("VIKUNJA_API_TOKEN", "").strip()
     base_url = os.environ.get("VIKUNJA_API_URL", "").strip()
     projects, config_error = _env_projects()
     # Required connection env: fail closed with an actionable config_error rather
     # than reporting vik_unreachable/401 every tick on a misinstalled cron.
+    if not profile:
+        config_error = config_error or "HERMES_PROFILE_NAME is unset"
     if not base_url:
         config_error = config_error or "VIKUNJA_API_URL is unset"
     if not token:
@@ -636,7 +638,8 @@ def main(argv=None) -> int:
         # indistinguishable from the original log line and is treated as covered.
         # We prefer that rare miss over re-flagging completed work as untracked on
         # every tick for an hour (cry-wolf noise that erodes the signal).
-        recent_done = [e for e in state.get("recent_done", [])
+        prev_recent = state.get("recent_done", [])
+        recent_done = [e for e in (prev_recent if isinstance(prev_recent, list) else [])
                        if isinstance(e, dict) and _within_window(e.get("ts", ""), GATEWAY_WINDOW_SEC)]
         for tid in changes["done"]:
             prev_entry = prev_tasks.get(tid)

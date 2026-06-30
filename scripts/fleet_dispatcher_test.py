@@ -727,6 +727,28 @@ def test_main_completed_task_coverage_persists_next_tick(monkeypatch, tmp_path, 
     assert out2["untracked_candidates"] == 0  # covered by persisted recent_done
 
 
+def test_main_missing_profile_config_error(monkeypatch, tmp_path, capsys):
+    # Codex round-30 P3: blank HERMES_PROFILE_NAME must fail closed.
+    _env(monkeypatch, tmp_path)
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: (_ for _ in ()).throw(AssertionError("no API")))
+    fd.main([])
+    assert "HERMES_PROFILE_NAME" in json.loads(capsys.readouterr().out.strip())["config_error"]
+
+
+def test_main_corrupt_recent_done_does_not_crash(monkeypatch, tmp_path, capsys):
+    # Codex round-30 P2: a non-list recent_done must not crash the run.
+    _env(monkeypatch, tmp_path)
+    fd.save_state(tmp_path / "state" / "state.json",
+                  {"tasks": {"1": {"updated": "x", "title": "t"}}, "recent_done": None})
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: [{"id": 1, "title": "t", "updated": "x"}])
+    rc = fd.main([])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out.strip())["profile"] == "sentinel"
+
+
 def test_main_missing_hermes_home_config_error(monkeypatch, tmp_path, capsys):
     # Codex round-19 P2: a missing HERMES_HOME must fail closed, not fall back to
     # ~/.hermes and risk mixing per-profile state.
