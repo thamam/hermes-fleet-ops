@@ -88,6 +88,15 @@ def now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _within_window(ts: str, window_sec: int) -> bool:
+    """True if the UTC ISO timestamp `ts` is within `window_sec` of now."""
+    try:
+        t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return (datetime.now(UTC) - t).total_seconds() < window_sec
+
+
 # --------------------------------------------------------------------------- #
 # Atomic filesystem helpers
 # --------------------------------------------------------------------------- #
@@ -124,12 +133,22 @@ def load_quarantine(path: Path) -> list:
     return data if isinstance(data, list) else []
 
 
+def _quarantine_key(entry: dict) -> str:
+    """Dedup key. Real ids dedup by id; id-less records key on ts+reason so
+    several distinct malformed items are all preserved (operators inspect this
+    file), instead of collapsing onto a single "None" key."""
+    tid = entry.get("id")
+    if tid:
+        return f"id:{tid}"
+    return f"none:{entry.get('ts', '')}:{entry.get('reason', '')}"
+
+
 def save_quarantine(path: Path, existing: list, new_bad: list) -> int:
-    """Merge new quarantine entries by id, persist, return this-run bad count."""
-    by_id = {str(e.get("id")): e for e in existing}
+    """Merge new quarantine entries, persist, return this-run bad count."""
+    by_key = {_quarantine_key(e): e for e in existing}
     for entry in new_bad:
-        by_id[str(entry.get("id"))] = entry
-    _atomic_write_json(path, list(by_id.values()))
+        by_key[_quarantine_key(entry)] = entry
+    _atomic_write_json(path, list(by_key.values()))
     return len(new_bad)
 
 
@@ -572,6 +591,11 @@ def main(argv=None) -> int:
         # represents, so we cannot conclude any disappeared task is done.
         idless = any(not e.get("id") for e in all_bad)
         changes = detect_changes(prev_tasks, all_good, bad_ids)
+        # An id-less malformed record can't be correlated to the prior task it
+        # represents, so we cannot conclude any disappeared task is done: suppress
+        # done entirely this run (snapshot carry-forward below preserves them).
+        if idless:
+            changes["done"] = []
         quarantined = save_quarantine(quarantine_path, load_quarantine(quarantine_path), all_bad)
 
         # Best-effort: inbound, non-status work lines from the last hour that no
@@ -580,23 +604,32 @@ def main(argv=None) -> int:
         # coverage set includes prior-snapshot titles too, so work whose task was
         # just completed isn't reported as both noticed_done and untracked.
         candidates = scan_gateway_log(read_gateway_log_tail(gateway_log), datetime.now(UTC))
-        coverage = all_good + [{"title": v.get("title", "")}
-                               for v in prev_tasks.values() if isinstance(v, dict)]
+        # Keep titles of recently-completed tasks (within the gateway window) so a
+        # closed task still covers its in-window log line on later ticks, not just
+        # the run that saw it close. Prune expired entries each run.
+        recent_done = [e for e in state.get("recent_done", [])
+                       if isinstance(e, dict) and _within_window(e.get("ts", ""), GATEWAY_WINDOW_SEC)]
+        for tid in changes["done"]:
+            prev_entry = prev_tasks.get(tid)
+            title = prev_entry.get("title", "") if isinstance(prev_entry, dict) else ""
+            if title:
+                recent_done.append({"title": title, "ts": now_iso()})
+        coverage = all_good + [{"title": e["title"]} for e in recent_done]
         untracked = count_untracked(candidates, coverage)
 
         # Carry forward known-but-malformed tasks so a transient bad record never
-        # drops them from tracking (and they stay out of done detection). When an
-        # id-less malformed record is present, fail closed: suppress done entirely
-        # and preserve every prior task so none is falsely completed or dropped.
+        # drops them from tracking. When an id-less malformed record is present,
+        # also preserve every prior task so none is falsely dropped (done was
+        # already suppressed above).
         carry = set(bad_ids)
         if idless:
-            changes["done"] = []
             carry |= set(prev_tasks)
         new_snapshot = snapshot_tasks(all_good)
         for tid in carry:
             if tid in prev_tasks and tid not in new_snapshot:
                 new_snapshot[tid] = prev_tasks[tid]
         state["tasks"] = new_snapshot
+        state["recent_done"] = recent_done
         state["last_run"] = now_iso()
         save_state(state_path, state)
 

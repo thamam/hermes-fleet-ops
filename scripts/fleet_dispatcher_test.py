@@ -105,6 +105,17 @@ def test_validate_tasks_quarantines_non_object_payload():
     assert len(bad) == 1 and bad[0]["id"] is None
 
 
+def test_save_quarantine_preserves_multiple_idless(tmp_path):
+    # Codex round-23 P3: several id-less malformed records must all persist.
+    p = tmp_path / "q.json"
+    n = fd.save_quarantine(p, fd.load_quarantine(p), [
+        {"id": None, "reason": "non-object task payload: None", "ts": "2026-06-30T10:00:00Z"},
+        {"id": None, "reason": "missing/null id", "ts": "2026-06-30T10:00:01Z"},
+    ])
+    assert n == 2
+    assert len(fd.load_quarantine(p)) == 2
+
+
 def test_save_quarantine_merges_by_id(tmp_path):
     p = tmp_path / "q.json"
     n1 = fd.save_quarantine(p, fd.load_quarantine(p), [{"id": 1, "reason": "a"}])
@@ -603,6 +614,26 @@ def test_main_completed_task_not_done_and_untracked(monkeypatch, tmp_path, capsy
     out = json.loads(capsys.readouterr().out.strip())
     assert out["noticed_done"] == 1
     assert out["untracked_candidates"] == 0  # covered by the just-completed task
+
+
+def test_main_completed_task_coverage_persists_next_tick(monkeypatch, tmp_path, capsys):
+    # Codex round-23 P2: after a task closes, its in-window log line must not be
+    # re-reported as untracked on subsequent ticks.
+    _env(monkeypatch, tmp_path)
+    fd.save_state(tmp_path / "state" / "state.json",
+                  {"tasks": {"5": {"updated": "2026-06-30T10:00:00Z", "title": "deploy the build"}}})
+    log = tmp_path / "logs" / "gateway.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("inbound message from telegram: deploy the build\n")
+    monkeypatch.setattr(fd, "_http_get_json", lambda url, token: [])  # task 5 done
+
+    fd.main([])  # tick 1: sees it close
+    out1 = json.loads(capsys.readouterr().out.strip())
+    assert out1["noticed_done"] == 1 and out1["untracked_candidates"] == 0
+
+    fd.main([])  # tick 2: task gone from snapshot, log line still in window
+    out2 = json.loads(capsys.readouterr().out.strip())
+    assert out2["untracked_candidates"] == 0  # covered by persisted recent_done
 
 
 def test_main_missing_hermes_home_config_error(monkeypatch, tmp_path, capsys):
