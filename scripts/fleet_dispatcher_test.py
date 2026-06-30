@@ -156,6 +156,18 @@ def test_count_untracked_matches_open_task_title():
     assert fd.count_untracked(cands, [{"title": "Fix login bug"}]) == 1
 
 
+def test_scan_gateway_log_keeps_work_containing_status_word():
+    # Codex round-6 P2: "status" inside a real request is NOT a status check.
+    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    text = (
+        "2026-06-30T11:59:00 inbound message from telegram: fix the status page outage\n"
+        "2026-06-30T11:58:00 inbound message from telegram: what's your status?\n"
+    )
+    hits = fd.scan_gateway_log(text, now)
+    assert len(hits) == 1
+    assert "status page outage" in hits[0]
+
+
 def test_scan_gateway_log_drops_old_lines():
     now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
     text = "2026-06-30T09:00:00 inbound message from telegram: old work request\n"
@@ -385,6 +397,19 @@ def test_lock_broken_when_owner_pid_dead(tmp_path):
     lock.mkdir()
     (lock / "pid").write_text("2147483647")  # pid that does not exist
     assert fd.acquire_lock(lock) is True  # dead owner -> stale -> re-acquired
+
+
+def test_lock_takeover_of_dead_owner_then_held(tmp_path):
+    # Codex round-6 P2: after taking over a stale lock, this run owns it and a
+    # subsequent invocation must back off (no concurrent run).
+    lock = tmp_path / ".lock"
+    lock.mkdir()
+    (lock / "pid").write_text("2147483647")  # dead owner -> stale
+    assert fd.acquire_lock(lock) is True   # atomic takeover
+    assert (lock / "pid").read_text().strip() == str(__import__("os").getpid())
+    assert fd.acquire_lock(lock) is False  # now held by us
+    # no leftover .stale.* dirs from the takeover
+    assert not list(tmp_path.glob(".lock.stale.*"))
 
 
 def test_lock_stale_timeout_fallback_when_owner_unreadable(tmp_path):

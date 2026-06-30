@@ -51,9 +51,17 @@ UTC = timezone.utc
 NO_DUE_SENTINEL = "0001-01-01T00:00:00Z"  # Vikunja's "no due date" marker
 STALE_LOCK_SEC = 60
 GATEWAY_WINDOW_SEC = 3600
-# Lines that look like a status check, not new work — never an untracked candidate.
+# Status-CHECK phrasing, not new work — never an untracked candidate. Matches
+# the question/heartbeat intent, NOT the bare word "status" (so real work like
+# "fix the status page outage" is still surfaced). Errs narrow: a missed status
+# check merely shows a candidate; over-matching would mask real work.
 STATUS_RE = re.compile(
-    r"\b(status|ping|health|uptime|are you (up|there|alive)|you ok|how are you|sitrep)\b",
+    r"(how are you"
+    r"|are you (up|there|alive|ok|online|working)"
+    r"|you (still )?(there|up|alive|online|ok)\b"
+    r"|what'?s your status|status check|status\?"
+    r"|still (there|alive|running|up)"
+    r"|\bping\?|\bsitrep\b)",
     re.IGNORECASE,
 )
 # Target the gateway's actual inbound-message records — NOT bare "received",
@@ -161,13 +169,29 @@ def acquire_lock(lock_dir: Path) -> bool:
     except FileExistsError:
         if not _lock_is_stale(lock_dir):
             return False
+        # Atomic takeover: rename the stale lock aside first. os.rename is atomic,
+        # so if two invocations race on the same stale lock only one wins the
+        # rename; the loser gets an error and backs off, instead of both deleting
+        # and re-creating the lock and proceeding concurrently.
+        steal = lock_dir.with_name(f"{lock_dir.name}.stale.{os.getpid()}")
         try:
-            release_lock(lock_dir)
+            os.rename(lock_dir, steal)
+        except OSError:
+            return False  # another invocation won the takeover (or it vanished)
+        try:
+            (steal / "pid").unlink()
+        except OSError:
+            pass
+        try:
+            steal.rmdir()
+        except OSError:
+            pass
+        try:
             lock_dir.mkdir()
             _write_lock_owner(lock_dir)
             return True
         except OSError:
-            return False
+            return False  # a fresh run claimed it in the gap; back off
 
 
 def release_lock(lock_dir: Path) -> None:
