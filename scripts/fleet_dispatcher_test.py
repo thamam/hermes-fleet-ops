@@ -579,6 +579,32 @@ def test_main_blank_state_dir_falls_back_to_default(monkeypatch, tmp_path, capsy
     assert (tmp_path / "state" / "fleet_dispatcher" / "state.json").exists()
 
 
+def test_main_blank_vik_url_or_token_config_error(monkeypatch, tmp_path, capsys):
+    # Codex round-22 P3: blank VIKUNJA_API_URL/TOKEN fail closed with config_error.
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("VIKUNJA_API_TOKEN", "")
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: (_ for _ in ()).throw(AssertionError("no API")))
+    fd.main([])
+    assert "VIKUNJA_API_TOKEN" in json.loads(capsys.readouterr().out.strip())["config_error"]
+
+
+def test_main_completed_task_not_done_and_untracked(monkeypatch, tmp_path, capsys):
+    # Codex round-22 P2: work whose task was just completed must not be reported
+    # as both noticed_done and untracked while its log line is still in-window.
+    _env(monkeypatch, tmp_path)
+    fd.save_state(tmp_path / "state" / "state.json",
+                  {"tasks": {"5": {"updated": "2026-06-30T10:00:00Z", "title": "deploy the build"}}})
+    log = tmp_path / "logs" / "gateway.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("inbound message from telegram: deploy the build\n")
+    monkeypatch.setattr(fd, "_http_get_json", lambda url, token: [])  # task 5 now done/closed
+    fd.main([])
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["noticed_done"] == 1
+    assert out["untracked_candidates"] == 0  # covered by the just-completed task
+
+
 def test_main_missing_hermes_home_config_error(monkeypatch, tmp_path, capsys):
     # Codex round-19 P2: a missing HERMES_HOME must fail closed, not fall back to
     # ~/.hermes and risk mixing per-profile state.

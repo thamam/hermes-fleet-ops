@@ -505,9 +505,15 @@ def main(argv=None) -> int:
 
     profile = os.environ.get("HERMES_PROFILE_NAME", "unknown")
     hermes_home = os.environ.get("HERMES_HOME", "").strip()
-    token = os.environ.get("VIKUNJA_API_TOKEN", "")
-    base_url = os.environ.get("VIKUNJA_API_URL", "")
+    token = os.environ.get("VIKUNJA_API_TOKEN", "").strip()
+    base_url = os.environ.get("VIKUNJA_API_URL", "").strip()
     projects, config_error = _env_projects()
+    # Required connection env: fail closed with an actionable config_error rather
+    # than reporting vik_unreachable/401 every tick on a misinstalled cron.
+    if not base_url:
+        config_error = config_error or "VIKUNJA_API_URL is unset"
+    if not token:
+        config_error = config_error or "VIKUNJA_API_TOKEN is unset"
     # HERMES_HOME determines the per-agent state dir; silently defaulting it would
     # mix snapshots across profiles on a multi-profile host. Fail closed if unset
     # (unless the state dir is pinned explicitly).
@@ -569,10 +575,14 @@ def main(argv=None) -> int:
         quarantined = save_quarantine(quarantine_path, load_quarantine(quarantine_path), all_bad)
 
         # Best-effort: inbound, non-status work lines from the last hour that no
-        # open task title seems to cover. Content-matched (not a count) so an
-        # in-sync board reports 0 and unrelated task churn never masks a real gap.
+        # task title seems to cover. Content-matched (not a count) so an in-sync
+        # board reports 0 and unrelated task churn never masks a real gap. The
+        # coverage set includes prior-snapshot titles too, so work whose task was
+        # just completed isn't reported as both noticed_done and untracked.
         candidates = scan_gateway_log(read_gateway_log_tail(gateway_log), datetime.now(UTC))
-        untracked = count_untracked(candidates, all_good)
+        coverage = all_good + [{"title": v.get("title", "")}
+                               for v in prev_tasks.values() if isinstance(v, dict)]
+        untracked = count_untracked(candidates, coverage)
 
         # Carry forward known-but-malformed tasks so a transient bad record never
         # drops them from tracking (and they stay out of done detection). When an
