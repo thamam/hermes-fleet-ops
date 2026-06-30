@@ -187,6 +187,23 @@ def test_scan_gateway_log_returns_payload_only():
     assert fd.count_untracked(hits, [{"title": "PR 30"}]) == 1
 
 
+def test_scan_gateway_log_keeps_work_mentioning_sitrep():
+    # Codex round-9 P2: "fix the sitrep JSON" is work; only "sitrep?" is a check.
+    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    text = (
+        "2026-06-30T11:59:00 inbound message from telegram: fix the sitrep JSON\n"
+        "2026-06-30T11:58:00 inbound message from telegram: sitrep?\n"
+    )
+    hits = fd.scan_gateway_log(text, now)
+    assert hits == ["fix the sitrep JSON"]
+
+
+def test_count_untracked_numbered_pr_must_match():
+    # Codex round-9 P2: "ship PR 8" is not covered by "PR 9" via shared "pr".
+    assert fd.count_untracked(["ship PR 8"], [{"title": "PR 9"}]) == 1
+    assert fd.count_untracked(["ship PR 8"], [{"title": "PR 8"}]) == 0
+
+
 def test_scan_gateway_log_drops_old_lines():
     now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
     text = "2026-06-30T09:00:00 inbound message from telegram: old work request\n"

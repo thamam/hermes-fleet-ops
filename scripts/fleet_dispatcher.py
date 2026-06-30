@@ -61,7 +61,7 @@ STATUS_RE = re.compile(
     r"|you (still )?(there|up|alive|online|ok)\b"
     r"|what'?s your status|status check|status\?"
     r"|still (there|alive|running|up)"
-    r"|\bping\?|\bsitrep\b)",
+    r"|\bping\?|\bsitrep\?|send sitrep)",
     re.IGNORECASE,
 )
 # Target the gateway's actual inbound-message records — NOT bare "received",
@@ -358,25 +358,32 @@ def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_
 
 
 def _significant_words(text: str) -> set:
-    """Work-identifying tokens: 2+ char alphanumerics minus generic filler. The
-    2-char floor keeps ops acronyms (CI, DB, UI, PR, QA); the stopword set drops
-    channel/greeting noise so they don't drive matches either way."""
-    return set(re.findall(r"[a-z0-9]{2,}", text.lower())) - STOPWORDS
+    """Work-identifying tokens: 2+ char alphanumerics (keeps ops acronyms like
+    CI/DB/UI/PR/QA) plus standalone single digits (so "PR 8" vs "PR 9" can be
+    told apart), minus generic filler in STOPWORDS."""
+    return set(re.findall(r"[a-z0-9]{2,}|\d", text.lower())) - STOPWORDS
 
 
 def count_untracked(candidates: list, open_tasks: list) -> int:
-    """Best-effort: a candidate inbound line counts as untracked only if it shares
-    no work-identifying word with any open task title. Matches whole tokens (set
-    intersection, not substring) so short acronyms don't spuriously match longer
-    words. A candidate with no significant tokens is surfaced (can't confirm it
-    is covered) — erring toward board discipline."""
-    title_words = set()
-    for t in open_tasks:
-        title_words |= _significant_words(str(t.get("title", "")))
+    """Best-effort: a candidate inbound line counts as untracked unless some open
+    task title covers it. A title covers a candidate when they share a
+    work-identifying word AND every numeric token in the candidate also appears in
+    that same title — so "ship PR 8" is not covered by "PR 9" merely via "pr".
+    Matches whole tokens (not substring) so short acronyms don't false-match; a
+    candidate with no significant tokens is surfaced (erring toward discipline)."""
+    title_sets = [_significant_words(str(t.get("title", ""))) for t in open_tasks]
     untracked = 0
     for line in candidates:
         words = _significant_words(line)
-        if not words or not (words & title_words):
+        nums = {w for w in words if w.isdigit()}
+        non_num = words - nums
+        # A title covers the candidate if it shares a non-numeric word AND
+        # contains every numeric token the candidate names (so "PR 8" needs the
+        # title to have both "pr" and "8", not just one of them).
+        covered = bool(non_num) and any(
+            (non_num & ts) and nums <= ts for ts in title_sets
+        )
+        if not covered:
             untracked += 1
     return untracked
 
