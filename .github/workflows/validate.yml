@@ -10,6 +10,8 @@ on:
       - "stakeholders.yaml"
       - "patches/**"
       - "scripts/validate-config.py"
+      - "scripts/fleet_dispatcher.py"
+      - "scripts/fleet_dispatcher_test.py"
       - ".github/workflows/validate.yml"
   push:
     branches: [main]
@@ -31,3 +33,19 @@ jobs:
 
       - name: Validate config (schema + patch dry-run)
         run: python3 scripts/validate-config.py --repo-root .
+
+  dispatcher-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install --quiet pytest
+
+      - name: Run fleet_dispatcher unit tests
+        run: python3 -m pytest scripts/fleet_dispatcher_test.py -q
