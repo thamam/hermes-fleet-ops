@@ -73,6 +73,13 @@ STATUS_RE = re.compile(
 # Target the gateway's actual inbound-message records — NOT bare "received",
 # which also matches lifecycle lines like "Received SIGTERM — shutting down".
 INBOUND_RE = re.compile(r"(inbound message|incoming message|message from|msg<-)", re.IGNORECASE)
+# Courtesy wrappers stripped before deciding if a payload IS a status check, so
+# "please send sitrep" / "status please" are recognized as heartbeats.
+COURTESY_RE = re.compile(
+    r"^(please|pls|plz|kindly|hey|hi|hello|yo|thanks|thank you|ty)\b[\s,]*"
+    r"|[\s,]*(please|pls|plz|kindly|thanks|thank you|ty)$",
+    re.IGNORECASE,
+)
 TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})")
 # Generic channel/greeting words that don't identify a unit of work; excluded
 # when matching an inbound line against open-task titles.
@@ -410,6 +417,20 @@ def _message_payload(line: str) -> str:
     return rest.strip()
 
 
+def _status_core(payload: str) -> str:
+    """Normalize a payload for status-check fullmatch: straighten curly quotes,
+    strip surrounding punctuation, and peel leading/trailing courtesy words so
+    'please send sitrep' / 'status please' / curly 'what's your status?' match."""
+    core = (payload.replace("’", "'").replace("‘", "'")
+            .replace("“", '"').replace("”", '"'))
+    core = core.strip(" \t'\"-—:.?!")
+    prev = None
+    while core != prev:  # peel both ends, possibly more than once
+        prev = core
+        core = COURTESY_RE.sub("", core).strip(" \t,.?!")
+    return core
+
+
 def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_SEC) -> list:
     """Inbound, work-triggering message payloads from the last `window_sec`.
     Status-check chatter is excluded so it never false-positives as untracked
@@ -434,13 +455,11 @@ def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_
             if ts and ts < cutoff:
                 continue
         payload = _message_payload(line)
-        # Suppress a payload only if the WHOLE message (sans surrounding
-        # punctuation) is a status check — not when it merely starts with or
-        # contains a status word ("fix the send sitrep command" is real work).
-        # Applied to the payload, not the whole line, so reply_to_text metadata
-        # can't cause a false drop.
-        core = payload.strip(" \t'\"-—:.?!")
-        if not payload or STATUS_RE.fullmatch(core):
+        # Suppress a payload only if the WHOLE message is a status check — not when
+        # it merely starts with or contains a status word ("fix the send sitrep
+        # command" is real work). Applied to the payload, not the whole line, so
+        # reply_to_text metadata can't cause a false drop.
+        if not payload or STATUS_RE.fullmatch(_status_core(payload)):
             continue
         hits.append(payload)  # full payload; callers truncate only for display
     return hits
@@ -640,7 +659,8 @@ def main(argv=None) -> int:
         # every tick for an hour (cry-wolf noise that erodes the signal).
         prev_recent = state.get("recent_done", [])
         recent_done = [e for e in (prev_recent if isinstance(prev_recent, list) else [])
-                       if isinstance(e, dict) and _within_window(e.get("ts", ""), GATEWAY_WINDOW_SEC)]
+                       if isinstance(e, dict) and e.get("title")
+                       and _within_window(e.get("ts", ""), GATEWAY_WINDOW_SEC)]
         for tid in changes["done"]:
             prev_entry = prev_tasks.get(tid)
             title = prev_entry.get("title", "") if isinstance(prev_entry, dict) else ""

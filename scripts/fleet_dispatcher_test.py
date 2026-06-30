@@ -390,6 +390,18 @@ def test_count_untracked_non_ascii_task_match():
     assert fd.count_untracked(["פרוס את הבילד"], [{"title": "תקן באג"}]) == 1
 
 
+def test_scan_gateway_log_polite_status_pings_suppressed():
+    # Codex round-31 P3: courtesy words and curly quotes around a status check.
+    now = datetime(2026, 6, 30, 12, 0, 0)
+    text = (
+        "2026-06-30T11:59:00 inbound message from telegram: please send sitrep\n"
+        "2026-06-30T11:58:40 inbound message from telegram: status please\n"
+        "2026-06-30T11:58:20 inbound message from telegram: what’s your status?\n"
+        "2026-06-30T11:58:00 inbound message from telegram: please deploy backend\n"
+    )
+    assert fd.scan_gateway_log(text, now) == ["please deploy backend"]
+
+
 def test_scan_gateway_log_status_word_starting_work_kept():
     # Codex round-26 P2: a status check is the WHOLE payload; work that merely
     # starts with a status phrase is surfaced.
@@ -742,6 +754,19 @@ def test_main_corrupt_recent_done_does_not_crash(monkeypatch, tmp_path, capsys):
     _env(monkeypatch, tmp_path)
     fd.save_state(tmp_path / "state" / "state.json",
                   {"tasks": {"1": {"updated": "x", "title": "t"}}, "recent_done": None})
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: [{"id": 1, "title": "t", "updated": "x"}])
+    rc = fd.main([])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out.strip())["profile"] == "sentinel"
+
+
+def test_main_recent_done_entry_without_title_does_not_crash(monkeypatch, tmp_path, capsys):
+    # Codex round-31 P2: a recent_done entry with ts but no title must not crash.
+    _env(monkeypatch, tmp_path)
+    fd.save_state(tmp_path / "state" / "state.json",
+                  {"tasks": {"1": {"updated": "x", "title": "t"}},
+                   "recent_done": [{"ts": fd.now_iso()}]})  # no title key
     monkeypatch.setattr(fd, "_http_get_json",
                         lambda url, token: [{"id": 1, "title": "t", "updated": "x"}])
     rc = fd.main([])
