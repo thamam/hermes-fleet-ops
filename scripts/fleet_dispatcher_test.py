@@ -148,6 +148,14 @@ def test_detect_changes_fractional_seconds_update():
     assert fd.detect_changes(prev, current)["updated"] == ["1"]
 
 
+def test_detect_changes_guards_corrupt_prev_entry():
+    # Codex round-14 P3: a null prev-task entry must not crash detect_changes.
+    prev = {"1": None}
+    current = [{"id": 1, "updated": "2026-06-30T11:00:00Z"}]
+    ch = fd.detect_changes(prev, current)
+    assert ch["updated"] == ["1"]  # treated as advanced from empty, no crash
+
+
 def test_detect_changes_no_churn_when_updated_not_advanced():
     prev = {"1": {"updated": "2026-06-30T10:00:00Z"}}
     current = [{"id": 1, "updated": "2026-06-30T10:00:00Z"}]

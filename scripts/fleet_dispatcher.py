@@ -305,7 +305,9 @@ def detect_changes(prev_tasks: dict, current_good: list, quarantined_ids=None) -
     done = sorted(prev_ids - cur_ids - quarantined_ids)
     updated = []
     for tid in cur_ids & prev_ids:
-        if _updated_after(cur[tid].get("updated", ""), prev_tasks[tid].get("updated", "")):
+        prev_entry = prev_tasks[tid]
+        prev_u = prev_entry.get("updated", "") if isinstance(prev_entry, dict) else ""
+        if _updated_after(cur[tid].get("updated", ""), prev_u):
             updated.append(tid)
     return {"new": new, "done": done, "updated": sorted(updated)}
 
