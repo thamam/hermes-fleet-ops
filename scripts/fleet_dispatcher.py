@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import http.client
 import json
 import os
@@ -145,7 +146,7 @@ def _quarantine_key(entry: dict) -> str:
     tid = entry.get("id")
     if tid:
         return f"id:{tid}"
-    return f"none:{entry.get('ts', '')}:{entry.get('reason', '')}"
+    return f"none:{entry.get('ts', '')}:{entry.get('reason', '')}:{entry.get('fp', '')}"
 
 
 def save_quarantine(path: Path, existing: list, new_bad: list) -> int:
@@ -288,6 +289,15 @@ def _parse_due(val: str) -> datetime:
     return datetime.fromisoformat(val.replace("Z", "+00:00"))
 
 
+def _fingerprint(obj) -> str:
+    """Stable short fingerprint of a raw task, so distinct id-less malformed
+    records from the same poll don't collide on (ts, reason) in quarantine."""
+    try:
+        return hashlib.sha1(repr(obj).encode("utf-8", "replace")).hexdigest()[:12]
+    except Exception:  # noqa: BLE001 - fingerprinting must never crash validation
+        return ""
+
+
 def validate_tasks(raw_tasks: list) -> tuple[list, list]:
     """Split tasks into (good, quarantined). A task is quarantined if it has a
     missing/null id or a present-but-unparseable due_date."""
@@ -295,11 +305,12 @@ def validate_tasks(raw_tasks: list) -> tuple[list, list]:
     for t in raw_tasks:
         if not isinstance(t, dict):
             bad.append({"id": None, "reason": f"non-object task payload: {t!r}",
-                        "ts": now_iso()})
+                        "ts": now_iso(), "fp": _fingerprint(t)})
             continue
         tid = t.get("id")
         if not tid:
-            bad.append({"id": tid, "reason": "missing/null id", "ts": now_iso()})
+            bad.append({"id": tid, "reason": "missing/null id", "ts": now_iso(),
+                        "fp": _fingerprint(t)})
             continue
         due = t.get("due_date")
         if due and due != NO_DUE_SENTINEL:

@@ -128,6 +128,17 @@ def test_save_quarantine_drops_non_dict_existing(tmp_path):
     assert persisted == [{"id": 3, "reason": "ok", "ts": "t"}]
 
 
+def test_validate_tasks_distinct_idless_same_poll_preserved(tmp_path):
+    # Codex round-28 P3: two distinct id-less malformed tasks in one poll must
+    # both persist (distinct fingerprints), not collide on ts+reason.
+    good, bad = fd.validate_tasks([{"title": "alpha"}, {"title": "beta"}])
+    assert good == []
+    assert len({fd._quarantine_key(e) for e in bad}) == 2
+    p = tmp_path / "q.json"
+    fd.save_quarantine(p, fd.load_quarantine(p), bad)
+    assert len(fd.load_quarantine(p)) == 2
+
+
 def test_save_quarantine_merges_by_id(tmp_path):
     p = tmp_path / "q.json"
     n1 = fd.save_quarantine(p, fd.load_quarantine(p), [{"id": 1, "reason": "a"}])
