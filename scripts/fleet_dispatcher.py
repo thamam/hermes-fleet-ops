@@ -53,17 +53,20 @@ UTC = timezone.utc
 NO_DUE_SENTINEL = "0001-01-01T00:00:00Z"  # Vikunja's "no due date" marker
 STALE_LOCK_SEC = 60
 GATEWAY_WINDOW_SEC = 3600
-# Status-CHECK phrasing, not new work — never an untracked candidate. Matches
-# the question/heartbeat intent, NOT the bare word "status" (so real work like
-# "fix the status page outage" is still surfaced). Errs narrow: a missed status
-# check merely shows a candidate; over-matching would mask real work.
+# Status-CHECK payloads, not new work — never an untracked candidate. Matched
+# with fullmatch against the whole (punctuation-stripped) payload, so a message
+# is only suppressed when it IS a status check, not when it merely starts with or
+# contains one of these words ("fix the status page outage" / "send sitrep
+# command is broken" are still surfaced). Errs narrow: a missed status check
+# merely shows a candidate; over-matching would mask real work.
 STATUS_RE = re.compile(
     r"(how are you"
     r"|are you (up|there|alive|ok|online|working)"
-    r"|you (still )?(there|up|alive|online|ok)\b"
-    r"|what'?s your status|status\?"
+    r"|you (still )?(there|up|alive|online|ok)"
+    r"|what'?s your status"
+    r"|status( check)?"
     r"|still (there|alive|running|up)"
-    r"|\bping\?|\bsitrep\?|send sitrep)",
+    r"|ping|sitrep|send sitrep)",
     re.IGNORECASE,
 )
 # Target the gateway's actual inbound-message records — NOT bare "received",
@@ -419,12 +422,13 @@ def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_
             if ts and ts < cutoff:
                 continue
         payload = _message_payload(line)
-        # Suppress a payload only if it IS a status check — i.e. the status phrase
-        # is at the START of the message (after leading punctuation), not merely
-        # mentioned mid-sentence in real work ("fix the send sitrep command").
+        # Suppress a payload only if the WHOLE message (sans surrounding
+        # punctuation) is a status check — not when it merely starts with or
+        # contains a status word ("fix the send sitrep command" is real work).
         # Applied to the payload, not the whole line, so reply_to_text metadata
         # can't cause a false drop.
-        if not payload or STATUS_RE.match(payload.lstrip(" \t'\"-—:.")):
+        core = payload.strip(" \t'\"-—:.?!")
+        if not payload or STATUS_RE.fullmatch(core):
             continue
         hits.append(payload[:200])
     return hits
@@ -455,10 +459,11 @@ def count_untracked(candidates: list, open_tasks: list) -> int:
             untracked += 1
             continue
         nums = {w for w in words if w.isdigit()}
-        # Short requests (1-2 tokens) must match in full — a single shared word
-        # is not coverage ("deploy build" vs "deploy backend"). Longer requests
-        # need a majority, so an extra verb doesn't block a real identifier match.
-        need = len(words) if len(words) <= 2 else (len(words) + 1) // 2
+        # A title must share a STRICT majority of the candidate's words (so a
+        # single shared word never counts, and an even-length request like
+        # "deploy frontend app prod" isn't covered by sharing only half). For 1-2
+        # token requests this is a full match.
+        need = len(words) // 2 + 1
         covered = any(
             len(words & ts) >= need and nums <= ts for ts in title_sets
         )

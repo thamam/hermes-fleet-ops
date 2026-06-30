@@ -368,6 +368,26 @@ def test_count_untracked_non_ascii_task_match():
     assert fd.count_untracked(["פרוס את הבילד"], [{"title": "תקן באג"}]) == 1
 
 
+def test_scan_gateway_log_status_word_starting_work_kept():
+    # Codex round-26 P2: a status check is the WHOLE payload; work that merely
+    # starts with a status phrase is surfaced.
+    now = datetime(2026, 6, 30, 12, 0, 0)
+    text = (
+        "2026-06-30T11:59:00 inbound message from telegram: send sitrep command is broken\n"
+        "2026-06-30T11:58:30 inbound message from telegram: what's your status handler broke\n"
+        "2026-06-30T11:58:00 inbound message from telegram: status?\n"
+    )
+    hits = fd.scan_gateway_log(text, now)
+    assert hits == ["send sitrep command is broken", "what's your status handler broke"]
+
+
+def test_count_untracked_even_length_strict_majority():
+    # Codex round-26 P2: 2/4 shared words is not coverage.
+    cand = ["deploy frontend app prod"]
+    assert fd.count_untracked(cand, [{"title": "deploy backend app staging"}]) == 1
+    assert fd.count_untracked(cand, [{"title": "deploy frontend app prod now"}]) == 0
+
+
 def test_scan_gateway_log_status_phrase_midwork_kept():
     # Codex round-20 P2: a status phrase mid-payload is real work, only a payload
     # that IS a status check (phrase at start) is suppressed.
