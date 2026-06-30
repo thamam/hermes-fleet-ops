@@ -321,6 +321,23 @@ def test_message_payload_unquoted_message_field():
     assert fd._message_payload("inbound: chat=123 message=deploy the build") == "deploy the build"
 
 
+def test_message_payload_repr_escaped_quotes():
+    # Codex round-18 P2: repr-escaped msg with both quote types decodes fully.
+    line = "inbound message: chat=1 msg='don\\'t deploy \"main\"' reply_to_id=None"
+    assert fd._message_payload(line) == 'don\'t deploy "main"'
+
+
+def test_significant_words_non_ascii():
+    # Codex round-18 P2: Hebrew (and other non-ASCII) tokens must be captured.
+    assert fd._significant_words("פרוס את הבילד") == {"פרוס", "את", "הבילד"}
+
+
+def test_count_untracked_non_ascii_task_match():
+    # Codex round-18 P2: a matching Hebrew task is not falsely reported untracked.
+    assert fd.count_untracked(["פרוס את הבילד"], [{"title": "פרוס את הבילד"}]) == 0
+    assert fd.count_untracked(["פרוס את הבילד"], [{"title": "תקן באג"}]) == 1
+
+
 def test_scan_gateway_log_drops_old_lines():
     now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
     text = "2026-06-30T09:00:00 inbound message from telegram: old work request\n"

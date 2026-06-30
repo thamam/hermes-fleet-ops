@@ -37,6 +37,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ast
 import http.client
 import json
 import os
@@ -347,11 +348,18 @@ def _message_payload(line: str) -> str:
       simple:      ... from telegram: deploy the build"""
     # Prefer an explicit message field if the gateway logs key=value metadata.
     # Hermes gateway/run.py logs `... msg=%r ...`, so msg is repr-quoted; this
-    # quoted branch handles the real format (and reply_to_text=%r is left alone
-    # because \btext does not match the "_text" inside "reply_to_text").
-    m = re.search(r"\b(?:msg|message|text|body)=(['\"])(.*?)\1", line, re.IGNORECASE)
+    # escape-aware capture (and ast.literal_eval) decodes a repr that escapes an
+    # inner quote, e.g. 'don\'t deploy "main"'. reply_to_text=%r is left alone
+    # because \btext does not match the "_text" inside "reply_to_text".
+    m = re.search(
+        r"\b(?:msg|message|text|body)=('(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")",
+        line, re.IGNORECASE,
+    )
     if m:
-        return m.group(2).strip()
+        try:
+            return str(ast.literal_eval(m.group(1))).strip()
+        except (ValueError, SyntaxError):
+            return m.group(1)[1:-1].strip()
     m = re.search(r"\b(?:msg|message|text|body)=(\S.*)$", line, re.IGNORECASE)
     if m:
         return m.group(1).strip()
@@ -391,10 +399,11 @@ def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_
 
 
 def _significant_words(text: str) -> set:
-    """Work-identifying tokens: 2+ char alphanumerics (keeps ops acronyms like
-    CI/DB/UI/PR/QA) plus standalone single digits (so "PR 8" vs "PR 9" can be
-    told apart), minus generic filler in STOPWORDS."""
-    return set(re.findall(r"[a-z0-9]{2,}|\d", text.lower())) - STOPWORDS
+    """Work-identifying tokens: 2+ char word characters (Unicode-aware, so Hebrew
+    and other non-ASCII titles tokenize too; keeps ops acronyms like CI/DB/PR)
+    plus standalone single digits (so "PR 8" vs "PR 9" can be told apart), minus
+    generic filler in STOPWORDS. Underscore is excluded so it can't join tokens."""
+    return set(re.findall(r"[^\W_]{2,}|\d", text.lower(), re.UNICODE)) - STOPWORDS
 
 
 def count_untracked(candidates: list, open_tasks: list) -> int:
