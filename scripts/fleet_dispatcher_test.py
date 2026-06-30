@@ -292,6 +292,16 @@ def test_scan_gateway_log_structured_msg_format():
     assert fd.count_untracked(hits, [{"title": "Deploy the new build"}]) == 0
 
 
+def test_scan_gateway_log_work_reply_to_status_ping():
+    # Codex round-17 P2: status filter must run on the payload, not the whole
+    # line — real work replying to a status ping (reply_to_text metadata) counts.
+    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    text = ("2026-06-30T11:59:00 inbound message: platform=telegram chat=123 "
+            "msg='deploy the build' reply_to_id=42 reply_to_text=\"what's your status?\"\n")
+    hits = fd.scan_gateway_log(text, now)
+    assert hits == ["deploy the build"]
+
+
 def test_scan_gateway_log_real_gateway_format():
     # Ground truth from hermes-agent gateway/run.py:8264 —
     #   "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r"

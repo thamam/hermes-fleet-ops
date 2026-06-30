@@ -370,7 +370,7 @@ def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_
     cutoff = now - timedelta(seconds=window_sec)
     hits = []
     for line in text.splitlines():
-        if not INBOUND_RE.search(line) or STATUS_RE.search(line):
+        if not INBOUND_RE.search(line):
             continue
         m = TS_RE.search(line)
         if m:
@@ -381,7 +381,12 @@ def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_
             if ts and ts < cutoff:
                 continue
         payload = _message_payload(line)
-        hits.append((payload or line.strip())[:200])
+        # Apply the status-check filter to the PAYLOAD, not the whole line: real
+        # gateway lines carry reply_to_text metadata, so a work message that
+        # replies to a status ping must not be dropped as a status check.
+        if not payload or STATUS_RE.search(payload):
+            continue
+        hits.append(payload[:200])
     return hits
 
 
