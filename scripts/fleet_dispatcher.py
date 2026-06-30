@@ -56,8 +56,18 @@ STATUS_RE = re.compile(
     r"\b(status|ping|health|uptime|are you (up|there|alive)|you ok|how are you|sitrep)\b",
     re.IGNORECASE,
 )
-INBOUND_RE = re.compile(r"\b(inbound|incoming|message from|received|msg<-|<-)\b", re.IGNORECASE)
+# Target the gateway's actual inbound-message records — NOT bare "received",
+# which also matches lifecycle lines like "Received SIGTERM — shutting down".
+INBOUND_RE = re.compile(r"(inbound message|incoming message|message from|msg<-)", re.IGNORECASE)
 TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})")
+# Generic channel/greeting words that don't identify a unit of work; excluded
+# when matching an inbound line against open-task titles.
+STOPWORDS = frozenset({
+    "inbound", "incoming", "message", "received", "from", "please", "could",
+    "would", "telegram", "whatsapp", "signal", "slack", "discord", "gateway",
+    "agent", "user", "this", "that", "with", "your", "have", "need", "want",
+    "there", "here", "about", "hello",
+})
 
 
 def now_iso() -> str:
@@ -253,10 +263,22 @@ def detect_changes(prev_tasks: dict, current_good: list, quarantined_ids=None) -
     done = sorted(prev_ids - cur_ids - quarantined_ids)
     updated = []
     for tid in cur_ids & prev_ids:
-        prev_u, cur_u = prev_tasks[tid].get("updated", ""), cur[tid].get("updated", "")
-        if cur_u and cur_u > prev_u:  # RFC3339 Z strings sort chronologically
+        if _updated_after(cur[tid].get("updated", ""), prev_tasks[tid].get("updated", "")):
             updated.append(tid)
     return {"new": new, "done": done, "updated": sorted(updated)}
+
+
+def _updated_after(cur_u: str, prev_u: str) -> bool:
+    """True if cur_u is chronologically later than prev_u. Parses RFC3339 so
+    fractional seconds / offsets compare correctly (lexicographic order does
+    not: '...00Z' vs '...00.100Z'). Falls back to a plain inequality if either
+    value is unparseable."""
+    if not cur_u:
+        return False
+    try:
+        return _parse_due(cur_u) > _parse_due(prev_u)
+    except (ValueError, TypeError, AttributeError):
+        return cur_u != prev_u
 
 
 def snapshot_tasks(good: list) -> dict:
@@ -290,6 +312,19 @@ def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_
                 continue
         hits.append(line.strip()[:200])
     return hits
+
+
+def count_untracked(candidates: list, open_tasks: list) -> int:
+    """Best-effort: a candidate inbound line counts as untracked only if no open
+    task title shares a work-identifying word with it. Generic channel/greeting
+    words are ignored so they neither inflate nor mask the signal."""
+    titles = " \n".join(str(t.get("title", "")) for t in open_tasks).lower()
+    untracked = 0
+    for line in candidates:
+        words = set(re.findall(r"[a-z0-9]{4,}", line.lower())) - STOPWORDS
+        if not any(w in titles for w in words):
+            untracked += 1
+    return untracked
 
 
 def read_gateway_log_tail(path: Path, max_bytes: int = 256_000) -> str:
@@ -402,11 +437,11 @@ def main(argv=None) -> int:
         changes = detect_changes(prev_tasks, all_good, bad_ids)
         quarantined = save_quarantine(quarantine_path, load_quarantine(quarantine_path), all_bad)
 
-        # Best-effort: inbound, non-status work lines seen in the last hour.
-        # Reported independently of task churn — subtracting unrelated new/updated
-        # tasks would mask a real 1:1 gap when both happen in the same tick.
+        # Best-effort: inbound, non-status work lines from the last hour that no
+        # open task title seems to cover. Content-matched (not a count) so an
+        # in-sync board reports 0 and unrelated task churn never masks a real gap.
         candidates = scan_gateway_log(read_gateway_log_tail(gateway_log), datetime.now(UTC))
-        untracked = len(candidates)
+        untracked = count_untracked(candidates, all_good)
 
         # Carry forward known-but-malformed tasks so a transient bad record never
         # drops them from tracking (and they stay out of done detection). When an

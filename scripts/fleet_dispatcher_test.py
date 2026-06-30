@@ -113,6 +113,14 @@ def test_detect_changes_excludes_quarantined_from_done():
     assert ch["done"] == []
 
 
+def test_detect_changes_fractional_seconds_update():
+    # Codex round-5 P2: fractional-second ts is chronologically later despite
+    # sorting earlier lexicographically.
+    prev = {"1": {"updated": "2026-06-30T10:00:00Z"}}
+    current = [{"id": 1, "updated": "2026-06-30T10:00:00.100Z"}]
+    assert fd.detect_changes(prev, current)["updated"] == ["1"]
+
+
 def test_detect_changes_no_churn_when_updated_not_advanced():
     prev = {"1": {"updated": "2026-06-30T10:00:00Z"}}
     current = [{"id": 1, "updated": "2026-06-30T10:00:00Z"}]
@@ -132,6 +140,20 @@ def test_scan_gateway_log_ignores_status_checks():
     hits = fd.scan_gateway_log(text, now)
     assert len(hits) == 1
     assert "fix the deploy" in hits[0]
+
+
+def test_scan_gateway_log_ignores_lifecycle_received():
+    # Codex round-5 P2: "Received SIGTERM" must not count as inbound work.
+    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    text = "2026-06-30T11:59:00 Received SIGTERM - initiating shutdown\n"
+    assert fd.scan_gateway_log(text, now) == []
+
+
+def test_count_untracked_matches_open_task_title():
+    # Codex round-5 P2: an inbound line already covered by an open task is tracked.
+    cands = ["inbound message from telegram: please deploy the new build"]
+    assert fd.count_untracked(cands, [{"title": "Deploy the new build"}]) == 0
+    assert fd.count_untracked(cands, [{"title": "Fix login bug"}]) == 1
 
 
 def test_scan_gateway_log_drops_old_lines():
