@@ -6,6 +6,7 @@ Mocks the Vik API at the _http_get_json boundary; no network is touched.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -265,12 +266,53 @@ def test_main_malformed_task_not_marked_done_and_stays_tracked(monkeypatch, tmp_
     assert "5" in state["tasks"]  # carried forward, still tracked
 
 
+def test_main_malformed_project_ids_config_error(monkeypatch, tmp_path, capsys):
+    # Codex round-2 P2: "4,abc" must fail closed with config_error, not crash.
+    _env(monkeypatch, tmp_path, projects="4,abc")
+    fd.save_state(tmp_path / "state" / "state.json", {"tasks": {"1": {"updated": "x"}}})
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: (_ for _ in ()).throw(AssertionError("no API")))
+    rc = fd.main([])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip())
+    assert "non-numeric" in out["config_error"]
+    assert fd.load_state(tmp_path / "state" / "state.json")["tasks"] == {"1": {"updated": "x"}}
+
+
 def test_lock_blocks_second_run(tmp_path):
     lock = tmp_path / ".lock"
     assert fd.acquire_lock(lock) is True
     assert fd.acquire_lock(lock) is False  # held
     fd.release_lock(lock)
     assert fd.acquire_lock(lock) is True
+
+
+def test_lock_not_broken_while_owner_alive_even_if_old(tmp_path):
+    # Codex round-2 P2: a live owner must hold the lock regardless of age.
+    import os as _os
+    lock = tmp_path / ".lock"
+    assert fd.acquire_lock(lock) is True  # owner pid = this live process
+    old = time.time() - 10 * fd.STALE_LOCK_SEC
+    _os.utime(lock, (old, old))
+    assert fd.acquire_lock(lock) is False  # still held — owner alive, age ignored
+    fd.release_lock(lock)
+
+
+def test_lock_broken_when_owner_pid_dead(tmp_path):
+    lock = tmp_path / ".lock"
+    lock.mkdir()
+    (lock / "pid").write_text("2147483647")  # pid that does not exist
+    assert fd.acquire_lock(lock) is True  # dead owner -> stale -> re-acquired
+
+
+def test_lock_stale_timeout_fallback_when_owner_unreadable(tmp_path):
+    import os as _os
+    lock = tmp_path / ".lock"
+    lock.mkdir()  # no pid file -> unreadable owner
+    assert fd.acquire_lock(lock) is False  # fresh mtime -> not stale yet
+    old = time.time() - 2 * fd.STALE_LOCK_SEC
+    _os.utime(lock, (old, old))
+    assert fd.acquire_lock(lock) is True  # aged past fallback timeout
 
 
 if __name__ == "__main__":

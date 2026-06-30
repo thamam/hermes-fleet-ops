@@ -267,8 +267,11 @@ fires safe. Run them via the cron's `--deliver origin --no-agent` mode.
 - **`"config_error"` in the sitrep** — `FLEET_DISPATCHER_PROJECT_IDS` is unset or
   blank. The run fails closed (state is left untouched, nothing marked done) until
   the env var is set.
-- **No sitrep / second run silent** — a prior run may hold the lock. If a run was
-  killed, the lock self-clears after 60s; to force: `rmdir ${STATE_DIR}/.lock`.
+- **No sitrep / second run silent** — a prior run may hold the lock. The lock
+  records its owner pid; a crashed run's lock self-clears on the next invocation
+  (dead owner), and an orphaned lock with no readable owner clears after 60s. A
+  live run is never broken, however long it takes. To force-clear:
+  `rm -rf ${STATE_DIR}/.lock`.
 - **Tasks keep getting quarantined** — inspect `${STATE_DIR}/quarantined.json`;
   fix the offending task's `due_date` or `id` in the Vik board.
 - **`untracked_candidates` noisy** — the gateway scan is best-effort heuristic;

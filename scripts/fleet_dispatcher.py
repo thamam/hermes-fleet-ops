@@ -105,27 +105,66 @@ def save_quarantine(path: Path, existing: list, new_bad: list) -> int:
 # --------------------------------------------------------------------------- #
 # Lock — atomic mkdir, 60s stale breakaway (pattern from Nigel's dispatcher)
 # --------------------------------------------------------------------------- #
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # exists but owned by another user
+        return True
+    except OSError:
+        return False
+
+
+def _lock_is_stale(lock_dir: Path) -> bool:
+    """A lock is stale only if its owner is gone. If the owner pid is alive the
+    lock is NEVER stale, no matter how long the run has taken — this is what
+    stops a slow but live run from being broken out from under itself. The 60s
+    timeout is a fallback for orphaned locks whose owner pid is unreadable."""
+    try:
+        pid = int((lock_dir / "pid").read_text().strip())
+    except (OSError, ValueError):
+        pid = None
+    if pid is not None:
+        return not _pid_alive(pid)
+    try:
+        age = time.time() - lock_dir.stat().st_mtime
+    except FileNotFoundError:
+        return True
+    return age > STALE_LOCK_SEC
+
+
+def _write_lock_owner(lock_dir: Path) -> None:
+    try:
+        (lock_dir / "pid").write_text(str(os.getpid()))
+    except OSError:
+        pass
+
+
 def acquire_lock(lock_dir: Path) -> bool:
     lock_dir.parent.mkdir(parents=True, exist_ok=True)
     try:
         lock_dir.mkdir()
+        _write_lock_owner(lock_dir)
         return True
     except FileExistsError:
+        if not _lock_is_stale(lock_dir):
+            return False
         try:
-            age = time.time() - lock_dir.stat().st_mtime
-        except FileNotFoundError:
-            age = STALE_LOCK_SEC + 1
-        if age > STALE_LOCK_SEC:
-            try:
-                lock_dir.rmdir()
-                lock_dir.mkdir()
-                return True
-            except OSError:
-                return False
-        return False
+            release_lock(lock_dir)
+            lock_dir.mkdir()
+            _write_lock_owner(lock_dir)
+            return True
+        except OSError:
+            return False
 
 
 def release_lock(lock_dir: Path) -> None:
+    try:
+        (lock_dir / "pid").unlink()
+    except OSError:
+        pass
     try:
         lock_dir.rmdir()
     except OSError:
@@ -280,9 +319,17 @@ def build_sitrep(profile: str, projects: list, open_tasks: int, changes: dict,
     return sitrep
 
 
-def _env_projects() -> list:
+def _env_projects() -> tuple[list, str]:
+    """Return (project_ids, config_error). A blank var or any non-numeric id is
+    a config error — both fail closed rather than crashing or clearing state."""
     raw = os.environ.get("FLEET_DISPATCHER_PROJECT_IDS", "").strip()
-    return [int(p) for p in raw.split(",") if p.strip()]
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if not parts:
+        return [], "FLEET_DISPATCHER_PROJECT_IDS is unset or blank"
+    try:
+        return [int(p) for p in parts], ""
+    except ValueError:
+        return [], f"FLEET_DISPATCHER_PROJECT_IDS has non-numeric ids: {raw!r}"
 
 
 def main(argv=None) -> int:
@@ -294,7 +341,7 @@ def main(argv=None) -> int:
     hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
     token = os.environ.get("VIKUNJA_API_TOKEN", "")
     base_url = os.environ.get("VIKUNJA_API_URL", "")
-    projects = _env_projects()
+    projects, config_error = _env_projects()
 
     state_dir = Path(os.environ.get("FLEET_DISPATCHER_STATE_DIR",
                                     str(Path(hermes_home) / "state" / "fleet_dispatcher")))
@@ -304,13 +351,13 @@ def main(argv=None) -> int:
     quarantine_path = state_dir / "quarantined.json"
     lock_dir = state_dir / ".lock"
 
-    if not projects:
-        # Fail closed: an unset/blank required env var must NOT be read as "zero
-        # open tasks" — that would falsely mark every tracked task done and clear
-        # the snapshot. Emit a config-error sitrep and leave state untouched.
+    if config_error:
+        # Fail closed: a missing/blank/malformed required env var must NOT be read
+        # as "zero open tasks" — that would falsely mark every tracked task done
+        # and clear the snapshot. Emit a config-error sitrep, leave state untouched.
         sitrep = build_sitrep(profile, [], 0,
                               {"new": [], "done": [], "updated": []}, 0, 0, False)
-        sitrep["config_error"] = "FLEET_DISPATCHER_PROJECT_IDS is unset or blank"
+        sitrep["config_error"] = config_error
         print(json.dumps(sitrep, separators=(",", ":")))
         return 0
 
