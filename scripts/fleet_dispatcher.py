@@ -140,13 +140,14 @@ def load_quarantine(path: Path) -> list:
 
 
 def _quarantine_key(entry: dict) -> str:
-    """Dedup key. Real ids dedup by id; id-less records key on ts+reason so
-    several distinct malformed items are all preserved (operators inspect this
-    file), instead of collapsing onto a single "None" key."""
+    """Dedup key. Real ids dedup by id; id-less records key on reason+fingerprint
+    (NOT ts): distinct malformed payloads differ by fingerprint and are all
+    preserved, while the SAME persistent bad record dedups across runs instead of
+    re-appending a copy every tick."""
     tid = entry.get("id")
     if tid:
         return f"id:{tid}"
-    return f"none:{entry.get('ts', '')}:{entry.get('reason', '')}:{entry.get('fp', '')}"
+    return f"none:{entry.get('reason', '')}:{entry.get('fp', '')}"
 
 
 def save_quarantine(path: Path, existing: list, new_bad: list) -> int:

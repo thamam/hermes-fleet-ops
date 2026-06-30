@@ -139,6 +139,17 @@ def test_validate_tasks_distinct_idless_same_poll_preserved(tmp_path):
     assert len(fd.load_quarantine(p)) == 2
 
 
+def test_quarantine_same_idless_dedups_across_runs(tmp_path):
+    # Codex round-29 P3: the same persistent id-less bad task must not append a
+    # new copy every run (key is reason+fingerprint, not ts).
+    p = tmp_path / "q.json"
+    _, bad1 = fd.validate_tasks([{"title": "alpha"}])
+    fd.save_quarantine(p, fd.load_quarantine(p), bad1)
+    _, bad2 = fd.validate_tasks([{"title": "alpha"}])  # same task, later tick
+    fd.save_quarantine(p, fd.load_quarantine(p), bad2)
+    assert len(fd.load_quarantine(p)) == 1
+
+
 def test_save_quarantine_merges_by_id(tmp_path):
     p = tmp_path / "q.json"
     n1 = fd.save_quarantine(p, fd.load_quarantine(p), [{"id": 1, "reason": "a"}])
