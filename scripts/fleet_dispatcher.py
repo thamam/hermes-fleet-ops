@@ -374,7 +374,13 @@ def _message_payload(line: str) -> str:
 def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_SEC) -> list:
     """Inbound, work-triggering message payloads from the last `window_sec`.
     Status-check chatter is excluded so it never false-positives as untracked
-    work. Returns the message payload only (timestamp/metadata stripped)."""
+    work. Returns the message payload only (timestamp/metadata stripped).
+
+    Gateway timestamps are Python logging's default: local wall-clock and
+    tz-naive. We compare against local wall-clock time (now is normalized to
+    naive local) so the window isn't skewed by the host's UTC offset."""
+    if now.tzinfo is not None:
+        now = now.astimezone().replace(tzinfo=None)
     cutoff = now - timedelta(seconds=window_sec)
     hits = []
     for line in text.splitlines():
@@ -383,7 +389,7 @@ def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_
         m = TS_RE.search(line)
         if m:
             try:
-                ts = datetime.fromisoformat(m.group(1).replace(" ", "T")).replace(tzinfo=UTC)
+                ts = datetime.fromisoformat(m.group(1).replace(" ", "T"))
             except ValueError:
                 ts = None
             if ts and ts < cutoff:
@@ -489,15 +495,20 @@ def main(argv=None) -> int:
     args, _ = parser.parse_known_args(argv)
 
     profile = os.environ.get("HERMES_PROFILE_NAME", "unknown")
-    hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
     token = os.environ.get("VIKUNJA_API_TOKEN", "")
     base_url = os.environ.get("VIKUNJA_API_URL", "")
     projects, config_error = _env_projects()
+    # HERMES_HOME determines the per-agent state dir; silently defaulting it would
+    # mix snapshots across profiles on a multi-profile host. Fail closed if unset
+    # (unless the state dir is pinned explicitly).
+    if not hermes_home and not os.environ.get("FLEET_DISPATCHER_STATE_DIR"):
+        config_error = config_error or "HERMES_HOME is unset"
 
     state_dir = Path(os.environ.get("FLEET_DISPATCHER_STATE_DIR",
-                                    str(Path(hermes_home) / "state" / "fleet_dispatcher")))
+                                    str(Path(hermes_home or ".") / "state" / "fleet_dispatcher")))
     gateway_log = Path(os.environ.get("FLEET_DISPATCHER_GATEWAY_LOG",
-                                      str(Path(hermes_home) / "logs" / "gateway.log")))
+                                      str(Path(hermes_home or ".") / "logs" / "gateway.log")))
     state_path = state_dir / "state.json"
     quarantine_path = state_dir / "quarantined.json"
     lock_dir = state_dir / ".lock"

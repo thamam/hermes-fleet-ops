@@ -167,7 +167,7 @@ def test_detect_changes_no_churn_when_updated_not_advanced():
 # Gateway log scan
 # --------------------------------------------------------------------------- #
 def test_scan_gateway_log_ignores_status_checks():
-    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 6, 30, 12, 0, 0)  # naive local wall-clock, matches log ts
     text = (
         "2026-06-30T11:59:00 inbound message from telegram: please fix the deploy\n"
         "2026-06-30T11:58:00 inbound message from telegram: what's your status?\n"
@@ -179,7 +179,7 @@ def test_scan_gateway_log_ignores_status_checks():
 
 def test_scan_gateway_log_ignores_lifecycle_received():
     # Codex round-5 P2: "Received SIGTERM" must not count as inbound work.
-    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 6, 30, 12, 0, 0)  # naive local wall-clock, matches log ts
     text = "2026-06-30T11:59:00 Received SIGTERM - initiating shutdown\n"
     assert fd.scan_gateway_log(text, now) == []
 
@@ -201,7 +201,7 @@ def test_count_untracked_matches_short_acronym_tasks():
 
 def test_scan_gateway_log_keeps_work_containing_status_word():
     # Codex round-6 P2: "status" inside a real request is NOT a status check.
-    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 6, 30, 12, 0, 0)  # naive local wall-clock, matches log ts
     text = (
         "2026-06-30T11:59:00 inbound message from telegram: fix the status page outage\n"
         "2026-06-30T11:58:00 inbound message from telegram: what's your status?\n"
@@ -214,7 +214,7 @@ def test_scan_gateway_log_keeps_work_containing_status_word():
 def test_scan_gateway_log_returns_payload_only():
     # Codex round-8 P2: timestamp/metadata must be stripped so it can't match
     # numeric task tokens. A "PR 30" task must not match a June-30 timestamp.
-    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 6, 30, 12, 0, 0)  # naive local wall-clock, matches log ts
     text = "2026-06-30T11:59:00 INFO inbound message from telegram: deploy the build\n"
     hits = fd.scan_gateway_log(text, now)
     assert hits == ["deploy the build"]
@@ -224,7 +224,7 @@ def test_scan_gateway_log_returns_payload_only():
 
 def test_scan_gateway_log_keeps_work_mentioning_sitrep():
     # Codex round-9 P2: "fix the sitrep JSON" is work; only "sitrep?" is a check.
-    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 6, 30, 12, 0, 0)  # naive local wall-clock, matches log ts
     text = (
         "2026-06-30T11:59:00 inbound message from telegram: fix the sitrep JSON\n"
         "2026-06-30T11:58:00 inbound message from telegram: sitrep?\n"
@@ -276,7 +276,7 @@ def test_main_non_object_task_does_not_false_complete(monkeypatch, tmp_path, cap
 
 def test_scan_gateway_log_keeps_work_mentioning_status_check():
     # Codex round-10 P2: "fix the status check endpoint" is work, not a heartbeat.
-    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 6, 30, 12, 0, 0)  # naive local wall-clock, matches log ts
     text = "2026-06-30T11:59:00 inbound message from telegram: fix the status check endpoint\n"
     assert fd.scan_gateway_log(text, now) == ["fix the status check endpoint"]
 
@@ -284,7 +284,7 @@ def test_scan_gateway_log_keeps_work_mentioning_status_check():
 def test_scan_gateway_log_structured_msg_format():
     # Codex round-15 P2: structured "msg='...'" lines must yield only the payload,
     # so the chat id and other metadata don't poison content matching.
-    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 6, 30, 12, 0, 0)  # naive local wall-clock, matches log ts
     text = ("2026-06-30T11:59:00 inbound message: platform=telegram "
             "chat=6452171937 msg='deploy the new build'\n")
     hits = fd.scan_gateway_log(text, now)
@@ -295,7 +295,7 @@ def test_scan_gateway_log_structured_msg_format():
 def test_scan_gateway_log_work_reply_to_status_ping():
     # Codex round-17 P2: status filter must run on the payload, not the whole
     # line — real work replying to a status ping (reply_to_text metadata) counts.
-    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 6, 30, 12, 0, 0)  # naive local wall-clock, matches log ts
     text = ("2026-06-30T11:59:00 inbound message: platform=telegram chat=123 "
             "msg='deploy the build' reply_to_id=42 reply_to_text=\"what's your status?\"\n")
     hits = fd.scan_gateway_log(text, now)
@@ -305,7 +305,7 @@ def test_scan_gateway_log_work_reply_to_status_ping():
 def test_scan_gateway_log_real_gateway_format():
     # Ground truth from hermes-agent gateway/run.py:8264 —
     #   "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r"
-    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 6, 30, 12, 0, 0)  # naive local wall-clock, matches log ts
     text = ("2026-06-30T11:59:00 INFO inbound message: platform=telegram user=alice "
             "chat=6452171937 msg='deploy the new build' reply_to_id=None reply_to_text=''\n")
     hits = fd.scan_gateway_log(text, now)
@@ -338,8 +338,16 @@ def test_count_untracked_non_ascii_task_match():
     assert fd.count_untracked(["פרוס את הבילד"], [{"title": "תקן באג"}]) == 1
 
 
+def test_scan_gateway_log_local_naive_now_window():
+    # Codex round-19 P2: a naive log ts compared to local wall-clock now. A line
+    # ~30 min old is kept; the comparison must not be skewed by host UTC offset.
+    now = datetime(2026, 6, 30, 12, 0, 0)  # naive local
+    text = "2026-06-30T11:30:00 inbound message from telegram: deploy the build\n"
+    assert fd.scan_gateway_log(text, now) == ["deploy the build"]
+
+
 def test_scan_gateway_log_drops_old_lines():
-    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 6, 30, 12, 0, 0)  # naive local wall-clock, matches log ts
     text = "2026-06-30T09:00:00 inbound message from telegram: old work request\n"
     assert fd.scan_gateway_log(text, now) == []
 
@@ -545,6 +553,22 @@ def test_main_malformed_task_not_marked_done_and_stays_tracked(monkeypatch, tmp_
     assert out["quarantined"] == 1
     state = fd.load_state(tmp_path / "state" / "state.json")
     assert "5" in state["tasks"]  # carried forward, still tracked
+
+
+def test_main_missing_hermes_home_config_error(monkeypatch, tmp_path, capsys):
+    # Codex round-19 P2: a missing HERMES_HOME must fail closed, not fall back to
+    # ~/.hermes and risk mixing per-profile state.
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "sentinel")
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("FLEET_DISPATCHER_STATE_DIR", raising=False)
+    monkeypatch.setenv("VIKUNJA_API_URL", "https://vik.example/api/v1")
+    monkeypatch.setenv("VIKUNJA_API_TOKEN", "tok")
+    monkeypatch.setenv("FLEET_DISPATCHER_PROJECT_IDS", "4")
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: (_ for _ in ()).throw(AssertionError("no API")))
+    rc = fd.main([])
+    assert rc == 0
+    assert "HERMES_HOME" in json.loads(capsys.readouterr().out.strip())["config_error"]
 
 
 def test_main_malformed_project_ids_config_error(monkeypatch, tmp_path, capsys):
