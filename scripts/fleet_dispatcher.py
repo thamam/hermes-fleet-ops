@@ -340,12 +340,21 @@ def snapshot_tasks(good: list) -> dict:
 # --------------------------------------------------------------------------- #
 def _message_payload(line: str) -> str:
     """The user message from an inbound log line, with the leading timestamp and
-    channel/logger metadata stripped. We return only the payload so timestamp and
-    logger tokens (e.g. a '30' from a June-30 stamp) can't spuriously match task
-    titles during untracked-work detection."""
-    m = INBOUND_RE.search(line)
-    rest = line[m.end():] if m else line
-    # Drop the channel prefix up to the first colon ("... from telegram: <msg>").
+    channel/logger metadata stripped. We return only the payload so metadata
+    tokens (timestamp digits, a chat id, etc.) can't spuriously match task titles
+    during untracked-work detection. Handles two shapes:
+      structured:  ... msg='deploy the build'   (key=value metadata + quoted msg)
+      simple:      ... from telegram: deploy the build"""
+    # Prefer an explicit message field if the gateway logs key=value metadata.
+    m = re.search(r"\b(?:msg|message|text|body)=(['\"])(.*?)\1", line, re.IGNORECASE)
+    if m:
+        return m.group(2).strip()
+    m = re.search(r"\b(?:msg|text|body)=(\S.*)$", line, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    # Simple form: strip the channel prefix up to the first colon.
+    mi = INBOUND_RE.search(line)
+    rest = line[mi.end():] if mi else line
     if ":" in rest:
         rest = rest.split(":", 1)[1]
     return rest.strip()

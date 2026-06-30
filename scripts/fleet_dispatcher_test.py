@@ -281,6 +281,17 @@ def test_scan_gateway_log_keeps_work_mentioning_status_check():
     assert fd.scan_gateway_log(text, now) == ["fix the status check endpoint"]
 
 
+def test_scan_gateway_log_structured_msg_format():
+    # Codex round-15 P2: structured "msg='...'" lines must yield only the payload,
+    # so the chat id and other metadata don't poison content matching.
+    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    text = ("2026-06-30T11:59:00 inbound message: platform=telegram "
+            "chat=6452171937 msg='deploy the new build'\n")
+    hits = fd.scan_gateway_log(text, now)
+    assert hits == ["deploy the new build"]
+    assert fd.count_untracked(hits, [{"title": "Deploy the new build"}]) == 0
+
+
 def test_scan_gateway_log_drops_old_lines():
     now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
     text = "2026-06-30T09:00:00 inbound message from telegram: old work request\n"
