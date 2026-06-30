@@ -395,10 +395,12 @@ def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_
             if ts and ts < cutoff:
                 continue
         payload = _message_payload(line)
-        # Apply the status-check filter to the PAYLOAD, not the whole line: real
-        # gateway lines carry reply_to_text metadata, so a work message that
-        # replies to a status ping must not be dropped as a status check.
-        if not payload or STATUS_RE.search(payload):
+        # Suppress a payload only if it IS a status check — i.e. the status phrase
+        # is at the START of the message (after leading punctuation), not merely
+        # mentioned mid-sentence in real work ("fix the send sitrep command").
+        # Applied to the payload, not the whole line, so reply_to_text metadata
+        # can't cause a false drop.
+        if not payload or STATUS_RE.match(payload.lstrip(" \t'\"-—:.")):
             continue
         hits.append(payload[:200])
     return hits
@@ -473,6 +475,13 @@ def build_sitrep(profile: str, projects: list, open_tasks: int, changes: dict,
     return sitrep
 
 
+def _env_or(name: str, default: str) -> str:
+    """Env var value, treating a missing OR blank value as unset. Blank optional
+    path vars (e.g. a templated `FLEET_DISPATCHER_STATE_DIR=`) must fall back to
+    the default, not resolve Path('') to the runner's cwd."""
+    return os.environ.get(name, "").strip() or default
+
+
 def _env_projects() -> tuple[list, str]:
     """Return (project_ids, config_error). A blank var or any non-numeric id is
     a config error — both fail closed rather than crashing or clearing state."""
@@ -502,13 +511,13 @@ def main(argv=None) -> int:
     # HERMES_HOME determines the per-agent state dir; silently defaulting it would
     # mix snapshots across profiles on a multi-profile host. Fail closed if unset
     # (unless the state dir is pinned explicitly).
-    if not hermes_home and not os.environ.get("FLEET_DISPATCHER_STATE_DIR"):
+    if not hermes_home and not _env_or("FLEET_DISPATCHER_STATE_DIR", ""):
         config_error = config_error or "HERMES_HOME is unset"
 
-    state_dir = Path(os.environ.get("FLEET_DISPATCHER_STATE_DIR",
-                                    str(Path(hermes_home or ".") / "state" / "fleet_dispatcher")))
-    gateway_log = Path(os.environ.get("FLEET_DISPATCHER_GATEWAY_LOG",
-                                      str(Path(hermes_home or ".") / "logs" / "gateway.log")))
+    state_dir = Path(_env_or("FLEET_DISPATCHER_STATE_DIR",
+                             str(Path(hermes_home or ".") / "state" / "fleet_dispatcher")))
+    gateway_log = Path(_env_or("FLEET_DISPATCHER_GATEWAY_LOG",
+                               str(Path(hermes_home or ".") / "logs" / "gateway.log")))
     state_path = state_dir / "state.json"
     quarantine_path = state_dir / "quarantined.json"
     lock_dir = state_dir / ".lock"

@@ -338,6 +338,19 @@ def test_count_untracked_non_ascii_task_match():
     assert fd.count_untracked(["פרוס את הבילד"], [{"title": "תקן באג"}]) == 1
 
 
+def test_scan_gateway_log_status_phrase_midwork_kept():
+    # Codex round-20 P2: a status phrase mid-payload is real work, only a payload
+    # that IS a status check (phrase at start) is suppressed.
+    now = datetime(2026, 6, 30, 12, 0, 0)
+    text = (
+        "2026-06-30T11:59:00 inbound message from telegram: fix the send sitrep command\n"
+        "2026-06-30T11:58:30 inbound message from telegram: update the what's your status handler\n"
+        "2026-06-30T11:58:00 inbound message from telegram: what's your status?\n"
+    )
+    hits = fd.scan_gateway_log(text, now)
+    assert hits == ["fix the send sitrep command", "update the what's your status handler"]
+
+
 def test_scan_gateway_log_local_naive_now_window():
     # Codex round-19 P2: a naive log ts compared to local wall-clock now. A line
     # ~30 min old is kept; the comparison must not be skewed by host UTC offset.
@@ -553,6 +566,17 @@ def test_main_malformed_task_not_marked_done_and_stays_tracked(monkeypatch, tmp_
     assert out["quarantined"] == 1
     state = fd.load_state(tmp_path / "state" / "state.json")
     assert "5" in state["tasks"]  # carried forward, still tracked
+
+
+def test_main_blank_state_dir_falls_back_to_default(monkeypatch, tmp_path, capsys):
+    # Codex round-20 P2: a blank FLEET_DISPATCHER_STATE_DIR must fall back to the
+    # HERMES_HOME default, not write to cwd.
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FLEET_DISPATCHER_STATE_DIR", "")  # templated-but-blank
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: [{"id": 1, "title": "t", "updated": "x"}])
+    fd.main([])
+    assert (tmp_path / "state" / "fleet_dispatcher" / "state.json").exists()
 
 
 def test_main_missing_hermes_home_config_error(monkeypatch, tmp_path, capsys):
