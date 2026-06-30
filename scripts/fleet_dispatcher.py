@@ -179,6 +179,10 @@ def validate_tasks(raw_tasks: list) -> tuple[list, list]:
             continue
         due = t.get("due_date")
         if due and due != NO_DUE_SENTINEL:
+            if not isinstance(due, str):
+                bad.append({"id": tid, "reason": f"non-string due_date: {due!r}",
+                            "ts": now_iso()})
+                continue
             try:
                 _parse_due(due)
             except (ValueError, TypeError):
@@ -189,14 +193,20 @@ def validate_tasks(raw_tasks: list) -> tuple[list, list]:
     return good, bad
 
 
-def detect_changes(prev_tasks: dict, current_good: list) -> dict:
-    """Diff prev run's open-task snapshot against this run's open tasks."""
+def detect_changes(prev_tasks: dict, current_good: list, quarantined_ids=None) -> dict:
+    """Diff prev run's open-task snapshot against this run's open tasks.
+
+    Tasks quarantined this run are excluded from `done`: a malformed record is
+    not a completion, so it must never be reported done (the caller also carries
+    it forward in the snapshot so it stays tracked)."""
+    quarantined_ids = {str(i) for i in (quarantined_ids or ())}
     cur = {str(t["id"]): t for t in current_good}
     prev_ids, cur_ids = set(prev_tasks), set(cur)
     new = sorted(cur_ids - prev_ids)
     # Was open last run, no longer in the open set -> marked done (best-effort;
-    # deletion looks the same and is reported as done too).
-    done = sorted(prev_ids - cur_ids)
+    # deletion looks the same and is reported as done too). Quarantined ids are
+    # excluded — they are malformed, not done.
+    done = sorted(prev_ids - cur_ids - quarantined_ids)
     updated = []
     for tid in cur_ids & prev_ids:
         prev_u, cur_u = prev_tasks[tid].get("updated", ""), cur[tid].get("updated", "")
@@ -294,6 +304,16 @@ def main(argv=None) -> int:
     quarantine_path = state_dir / "quarantined.json"
     lock_dir = state_dir / ".lock"
 
+    if not projects:
+        # Fail closed: an unset/blank required env var must NOT be read as "zero
+        # open tasks" — that would falsely mark every tracked task done and clear
+        # the snapshot. Emit a config-error sitrep and leave state untouched.
+        sitrep = build_sitrep(profile, [], 0,
+                              {"new": [], "done": [], "updated": []}, 0, 0, False)
+        sitrep["config_error"] = "FLEET_DISPATCHER_PROJECT_IDS is unset or blank"
+        print(json.dumps(sitrep, separators=(",", ":")))
+        return 0
+
     if not acquire_lock(lock_dir):
         return 0  # another run holds the lock; let it do the work
     try:
@@ -320,7 +340,8 @@ def main(argv=None) -> int:
             print(json.dumps(sitrep, separators=(",", ":")))
             return 0
 
-        changes = detect_changes(prev_tasks, all_good)
+        bad_ids = {str(e["id"]) for e in all_bad if e.get("id")}
+        changes = detect_changes(prev_tasks, all_good, bad_ids)
         quarantined = save_quarantine(quarantine_path, load_quarantine(quarantine_path), all_bad)
 
         candidates = scan_gateway_log(read_gateway_log_tail(gateway_log), datetime.now(UTC))
@@ -328,7 +349,13 @@ def main(argv=None) -> int:
         tracked = len(changes["new"]) + len(changes["updated"])
         untracked = max(0, len(candidates) - tracked)
 
-        state["tasks"] = snapshot_tasks(all_good)
+        # Carry forward known-but-malformed tasks so a transient bad record never
+        # drops them from tracking (and they stay out of done detection).
+        new_snapshot = snapshot_tasks(all_good)
+        for tid in bad_ids:
+            if tid in prev_tasks and tid not in new_snapshot:
+                new_snapshot[tid] = prev_tasks[tid]
+        state["tasks"] = new_snapshot
         state["last_run"] = now_iso()
         save_state(state_path, state)
 

@@ -70,6 +70,13 @@ def test_validate_tasks_accepts_no_due_sentinel_and_good():
     assert bad == []
 
 
+def test_validate_tasks_quarantines_non_string_due_date():
+    # Codex P2: {"due_date": 123} must quarantine, not raise AttributeError.
+    good, bad = fd.validate_tasks([{"id": 1, "due_date": 123}])
+    assert good == []
+    assert "non-string due_date" in bad[0]["reason"]
+
+
 def test_save_quarantine_merges_by_id(tmp_path):
     p = tmp_path / "q.json"
     n1 = fd.save_quarantine(p, fd.load_quarantine(p), [{"id": 1, "reason": "a"}])
@@ -95,6 +102,14 @@ def test_detect_changes_new_done_updated():
     assert ch["new"] == ["3"]
     assert ch["done"] == ["2"]
     assert ch["updated"] == ["1"]
+
+
+def test_detect_changes_excludes_quarantined_from_done():
+    # Codex P2: a previously-open task that comes back malformed (quarantined,
+    # absent from current_good) must NOT be reported done.
+    prev = {"5": {"updated": "2026-06-30T10:00:00Z"}}
+    ch = fd.detect_changes(prev, [], quarantined_ids={"5"})
+    assert ch["done"] == []
 
 
 def test_detect_changes_no_churn_when_updated_not_advanced():
@@ -210,6 +225,44 @@ def test_main_never_prints_token(monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr()
     assert "secret-token-xyz" not in captured.out
     assert "secret-token-xyz" not in captured.err
+
+
+def test_main_empty_projects_fails_closed_without_clearing_state(monkeypatch, tmp_path, capsys):
+    # Codex P2: blank FLEET_DISPATCHER_PROJECT_IDS must emit config_error and
+    # leave existing state untouched (not mark everything done + clear snapshot).
+    _env(monkeypatch, tmp_path, projects="")
+    fd.save_state(tmp_path / "state" / "state.json",
+                  {"tasks": {"99": {"updated": "x", "title": "live"}}})
+
+    def fail(url, token):
+        raise AssertionError("must not hit the API when no projects configured")
+
+    monkeypatch.setattr(fd, "_http_get_json", fail)
+    rc = fd.main([])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["config_error"]
+    assert out["noticed_done"] == 0
+    # state preserved
+    state = fd.load_state(tmp_path / "state" / "state.json")
+    assert state["tasks"] == {"99": {"updated": "x", "title": "live"}}
+
+
+def test_main_malformed_task_not_marked_done_and_stays_tracked(monkeypatch, tmp_path, capsys):
+    # Codex P2: a tracked task returning malformed must not flip to done and must
+    # remain in the snapshot for the next run.
+    _env(monkeypatch, tmp_path)
+    fd.save_state(tmp_path / "state" / "state.json",
+                  {"tasks": {"5": {"updated": "2026-06-30T10:00:00Z", "title": "real"}}})
+    served = {1: [[{"id": 5, "due_date": "not-a-date"}]]}
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: served[1].pop(0) if served[1] else [])
+    fd.main([])
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["noticed_done"] == 0
+    assert out["quarantined"] == 1
+    state = fd.load_state(tmp_path / "state" / "state.json")
+    assert "5" in state["tasks"]  # carried forward, still tracked
 
 
 def test_lock_blocks_second_run(tmp_path):
