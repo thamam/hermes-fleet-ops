@@ -292,6 +292,25 @@ def test_scan_gateway_log_structured_msg_format():
     assert fd.count_untracked(hits, [{"title": "Deploy the new build"}]) == 0
 
 
+def test_scan_gateway_log_real_gateway_format():
+    # Ground truth from hermes-agent gateway/run.py:8264 —
+    #   "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r"
+    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    text = ("2026-06-30T11:59:00 INFO inbound message: platform=telegram user=alice "
+            "chat=6452171937 msg='deploy the new build' reply_to_id=None reply_to_text=''\n")
+    hits = fd.scan_gateway_log(text, now)
+    assert hits == ["deploy the new build"]
+    assert fd.count_untracked(hits, [{"title": "Deploy the new build"}]) == 0
+    # the chat id must not leak into matching
+    assert fd.count_untracked(hits, [{"title": "unrelated 6452171937"}]) == 1
+
+
+def test_message_payload_unquoted_message_field():
+    # Codex round-16 P2: an unquoted message= field must not fall through to the
+    # whole metadata string (defensive; real gateway always quotes via %r).
+    assert fd._message_payload("inbound: chat=123 message=deploy the build") == "deploy the build"
+
+
 def test_scan_gateway_log_drops_old_lines():
     now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
     text = "2026-06-30T09:00:00 inbound message from telegram: old work request\n"

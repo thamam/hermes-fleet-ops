@@ -346,10 +346,13 @@ def _message_payload(line: str) -> str:
       structured:  ... msg='deploy the build'   (key=value metadata + quoted msg)
       simple:      ... from telegram: deploy the build"""
     # Prefer an explicit message field if the gateway logs key=value metadata.
+    # Hermes gateway/run.py logs `... msg=%r ...`, so msg is repr-quoted; this
+    # quoted branch handles the real format (and reply_to_text=%r is left alone
+    # because \btext does not match the "_text" inside "reply_to_text").
     m = re.search(r"\b(?:msg|message|text|body)=(['\"])(.*?)\1", line, re.IGNORECASE)
     if m:
         return m.group(2).strip()
-    m = re.search(r"\b(?:msg|text|body)=(\S.*)$", line, re.IGNORECASE)
+    m = re.search(r"\b(?:msg|message|text|body)=(\S.*)$", line, re.IGNORECASE)
     if m:
         return m.group(1).strip()
     # Simple form: strip the channel prefix up to the first colon.
