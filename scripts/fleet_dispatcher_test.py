@@ -55,6 +55,12 @@ def test_main_non_object_state_file_does_not_crash(monkeypatch, tmp_path, capsys
     assert json.loads(capsys.readouterr().out.strip())["profile"] == "sentinel"
 
 
+def test_within_window_naive_ts_no_crash():
+    # Codex round-32 P2: a naive ts must be handled (treated as UTC), not crash.
+    assert fd._within_window("2026-06-30T10:00:00", 3600) in (True, False)
+    assert fd._within_window("garbage", 3600) is False
+
+
 def test_save_state_atomic_roundtrip(tmp_path):
     p = tmp_path / "sub" / "state.json"
     fd.save_state(p, {"tasks": {"1": {"updated": "x"}}})

@@ -102,12 +102,16 @@ def now_iso() -> str:
 
 
 def _within_window(ts: str, window_sec: int) -> bool:
-    """True if the UTC ISO timestamp `ts` is within `window_sec` of now."""
+    """True if the ISO timestamp `ts` is within `window_sec` of now. A naive ts
+    (no tz, e.g. from a manual state edit) is treated as UTC; any parse/compare
+    error returns False rather than crashing the run."""
     try:
         t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - t).total_seconds() < window_sec
     except (ValueError, TypeError, AttributeError):
         return False
-    return (datetime.now(UTC) - t).total_seconds() < window_sec
 
 
 # --------------------------------------------------------------------------- #
