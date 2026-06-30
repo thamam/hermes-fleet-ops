@@ -36,6 +36,25 @@ def test_load_state_corrupt_returns_empty(tmp_path):
     assert fd.load_state(p) == {}
 
 
+def test_load_state_non_object_returns_empty(tmp_path):
+    # Codex round-13 P2: a valid-JSON-but-non-object state file must not crash.
+    p = tmp_path / "state.json"
+    p.write_text("[]")
+    assert fd.load_state(p) == {}
+    p.write_text("null")
+    assert fd.load_state(p) == {}
+
+
+def test_main_non_object_state_file_does_not_crash(monkeypatch, tmp_path, capsys):
+    _env(monkeypatch, tmp_path)
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "state" / "state.json").write_text("[]")
+    monkeypatch.setattr(fd, "_http_get_json", lambda url, token: [])
+    rc = fd.main([])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out.strip())["profile"] == "sentinel"
+
+
 def test_save_state_atomic_roundtrip(tmp_path):
     p = tmp_path / "sub" / "state.json"
     fd.save_state(p, {"tasks": {"1": {"updated": "x"}}})

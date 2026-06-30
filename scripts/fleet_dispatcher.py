@@ -99,12 +99,19 @@ def _atomic_write_json(path: Path, obj) -> None:
     tmp.replace(path)
 
 
-def load_state(path: Path) -> dict:
+def _load_json(path: Path):
     try:
         with path.open(encoding="utf-8") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def load_state(path: Path) -> dict:
+    # Coerce a non-object state file ([], null, a bad edit) to {} so the run
+    # never crashes on state.get(...) — that would break the always-exit-0 cron.
+    data = _load_json(path)
+    return data if isinstance(data, dict) else {}
 
 
 def save_state(path: Path, state: dict) -> None:
@@ -112,7 +119,7 @@ def save_state(path: Path, state: dict) -> None:
 
 
 def load_quarantine(path: Path) -> list:
-    data = load_state(path)
+    data = _load_json(path)
     return data if isinstance(data, list) else []
 
 
@@ -481,7 +488,9 @@ def main(argv=None) -> int:
         return 0  # another run holds the lock; let it do the work
     try:
         state = load_state(state_path)
-        prev_tasks = state.get("tasks", {})
+        prev_tasks = state.get("tasks")
+        if not isinstance(prev_tasks, dict):
+            prev_tasks = {}
 
         all_good, all_bad, open_total = [], [], 0
         vik_unreachable = False
