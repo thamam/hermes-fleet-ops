@@ -144,10 +144,13 @@ def _quarantine_key(entry: dict) -> str:
 
 
 def save_quarantine(path: Path, existing: list, new_bad: list) -> int:
-    """Merge new quarantine entries, persist, return this-run bad count."""
-    by_key = {_quarantine_key(e): e for e in existing}
+    """Merge new quarantine entries, persist, return this-run bad count. Non-dict
+    entries from a stale/corrupt quarantined.json are dropped rather than crashing
+    the run (always-exit-0 contract)."""
+    by_key = {_quarantine_key(e): e for e in existing if isinstance(e, dict)}
     for entry in new_bad:
-        by_key[_quarantine_key(entry)] = entry
+        if isinstance(entry, dict):
+            by_key[_quarantine_key(entry)] = entry
     _atomic_write_json(path, list(by_key.values()))
     return len(new_bad)
 
@@ -533,10 +536,12 @@ def main(argv=None) -> int:
         config_error = config_error or "VIKUNJA_API_URL is unset"
     if not token:
         config_error = config_error or "VIKUNJA_API_TOKEN is unset"
-    # HERMES_HOME determines the per-agent state dir; silently defaulting it would
-    # mix snapshots across profiles on a multi-profile host. Fail closed if unset
-    # (unless the state dir is pinned explicitly).
-    if not hermes_home and not _env_or("FLEET_DISPATCHER_STATE_DIR", ""):
+    # HERMES_HOME determines both the per-agent state dir and the gateway log
+    # path; silently defaulting it would mix snapshots across profiles and point
+    # the gateway scan at ./logs (disabling untracked detection). Fail closed
+    # unless BOTH paths are pinned explicitly.
+    if not hermes_home and not (_env_or("FLEET_DISPATCHER_STATE_DIR", "")
+                                and _env_or("FLEET_DISPATCHER_GATEWAY_LOG", "")):
         config_error = config_error or "HERMES_HOME is unset"
 
     state_dir = Path(_env_or("FLEET_DISPATCHER_STATE_DIR",

@@ -116,6 +116,18 @@ def test_save_quarantine_preserves_multiple_idless(tmp_path):
     assert len(fd.load_quarantine(p)) == 2
 
 
+def test_save_quarantine_drops_non_dict_existing(tmp_path):
+    # Codex round-24 P2: a non-dict entry in quarantined.json must not crash.
+    p = tmp_path / "q.json"
+    fd.save_state(p, [])  # not relevant; build a corrupt list directly
+    import json as _json
+    p.write_text(_json.dumps(["stale-scalar", {"id": 3, "reason": "ok", "ts": "t"}]))
+    n = fd.save_quarantine(p, fd.load_quarantine(p), [])
+    assert n == 0
+    persisted = fd.load_quarantine(p)
+    assert persisted == [{"id": 3, "reason": "ok", "ts": "t"}]
+
+
 def test_save_quarantine_merges_by_id(tmp_path):
     p = tmp_path / "q.json"
     n1 = fd.save_quarantine(p, fd.load_quarantine(p), [{"id": 1, "reason": "a"}])
@@ -649,6 +661,22 @@ def test_main_missing_hermes_home_config_error(monkeypatch, tmp_path, capsys):
                         lambda url, token: (_ for _ in ()).throw(AssertionError("no API")))
     rc = fd.main([])
     assert rc == 0
+    assert "HERMES_HOME" in json.loads(capsys.readouterr().out.strip())["config_error"]
+
+
+def test_main_missing_hermes_home_with_state_but_not_gateway(monkeypatch, tmp_path, capsys):
+    # Codex round-24 P2: state dir pinned but gateway log not -> still requires
+    # HERMES_HOME (else gateway scan silently points at ./logs).
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "sentinel")
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("FLEET_DISPATCHER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("FLEET_DISPATCHER_GATEWAY_LOG", raising=False)
+    monkeypatch.setenv("VIKUNJA_API_URL", "https://vik.example/api/v1")
+    monkeypatch.setenv("VIKUNJA_API_TOKEN", "tok")
+    monkeypatch.setenv("FLEET_DISPATCHER_PROJECT_IDS", "4")
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: (_ for _ in ()).throw(AssertionError("no API")))
+    fd.main([])
     assert "HERMES_HOME" in json.loads(capsys.readouterr().out.strip())["config_error"]
 
 
