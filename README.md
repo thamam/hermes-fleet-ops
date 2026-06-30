@@ -22,7 +22,9 @@ in the ClawHub repo. Read that before changing anything in this repo.
 │   └── 0001-fix-gemini-route-openai-suffixed-base-url.patch
 ├── scripts/
 │   ├── validate-config.py                    — merge-gate validator (schema + git am dry-run)
-│   └── deploy.sh                             — launchd-driven deploy agent on Doc's Mac
+│   ├── deploy.sh                             — launchd-driven deploy agent on Doc's Mac
+│   ├── fleet_dispatcher.py                   — canonical per-agent Vik 1:1-discipline dispatcher (see RUNBOOK §7)
+│   └── fleet_dispatcher_test.py             — pytest unit tests for the dispatcher
 ├── launchd/
 │   └── com.neuronbox.hermes-fleet-deploy.plist
 └── .github/workflows/
