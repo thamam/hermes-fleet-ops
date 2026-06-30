@@ -218,17 +218,26 @@ relies on the next interval to retry, rather than failing the cron.
 
 ### Install on a new agent
 
-1. Copy `scripts/fleet_dispatcher.py` to the host (or pull this ops repo). It is
-   stdlib-only (Python 3.10+) — no pip install needed.
+1. Copy the script to **`${HERMES_HOME}/scripts/fleet_dispatcher.py`**. The Hermes
+   cron `no_agent` runner only executes scripts under `${HERMES_HOME}/scripts`, so
+   it must live there (not pulled to an arbitrary repo path). It is stdlib-only
+   (Python 3.10+) — no pip install needed.
+   ```bash
+   mkdir -p "${HERMES_HOME}/scripts"
+   cp scripts/fleet_dispatcher.py "${HERMES_HOME}/scripts/fleet_dispatcher.py"
+   ```
+   (If you wire it to **system cron** instead of the Hermes cron, this path
+   constraint does not apply — run it from wherever you keep the ops repo.)
 2. Find the agent's owned Vik project id(s) (the project lane in the Vik board).
 3. Set the env vars (below) in the agent's cron environment.
 4. Dry-run once by hand and confirm a single JSON sitrep line:
    ```bash
    HERMES_PROFILE_NAME=sentinel HERMES_HOME=/home/ubuntu/.hermes/profiles/sentinel \
    VIKUNJA_API_URL=... VIKUNJA_API_TOKEN=... FLEET_DISPATCHER_PROJECT_IDS=4 \
-   python3 scripts/fleet_dispatcher.py --verbose
+   python3 "${HERMES_HOME}/scripts/fleet_dispatcher.py" --verbose
    ```
-5. Wire the three cron entries (below).
+5. Wire the three cron entries (below), pointing at
+   `${HERMES_HOME}/scripts/fleet_dispatcher.py`.
 
 ### Env vars
 

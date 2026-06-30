@@ -176,6 +176,17 @@ def test_scan_gateway_log_keeps_work_containing_status_word():
     assert "status page outage" in hits[0]
 
 
+def test_scan_gateway_log_returns_payload_only():
+    # Codex round-8 P2: timestamp/metadata must be stripped so it can't match
+    # numeric task tokens. A "PR 30" task must not match a June-30 timestamp.
+    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+    text = "2026-06-30T11:59:00 INFO inbound message from telegram: deploy the build\n"
+    hits = fd.scan_gateway_log(text, now)
+    assert hits == ["deploy the build"]
+    # the stripped payload shares nothing with "PR 30", so it stays untracked
+    assert fd.count_untracked(hits, [{"title": "PR 30"}]) == 1
+
+
 def test_scan_gateway_log_drops_old_lines():
     now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
     text = "2026-06-30T09:00:00 inbound message from telegram: old work request\n"

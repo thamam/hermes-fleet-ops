@@ -322,9 +322,23 @@ def snapshot_tasks(good: list) -> dict:
 # --------------------------------------------------------------------------- #
 # Gateway log scan — best-effort untracked-work detection
 # --------------------------------------------------------------------------- #
+def _message_payload(line: str) -> str:
+    """The user message from an inbound log line, with the leading timestamp and
+    channel/logger metadata stripped. We return only the payload so timestamp and
+    logger tokens (e.g. a '30' from a June-30 stamp) can't spuriously match task
+    titles during untracked-work detection."""
+    m = INBOUND_RE.search(line)
+    rest = line[m.end():] if m else line
+    # Drop the channel prefix up to the first colon ("... from telegram: <msg>").
+    if ":" in rest:
+        rest = rest.split(":", 1)[1]
+    return rest.strip()
+
+
 def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_SEC) -> list:
-    """Inbound, work-triggering lines from the last `window_sec`. Status-check
-    chatter is excluded so it never false-positives as untracked work."""
+    """Inbound, work-triggering message payloads from the last `window_sec`.
+    Status-check chatter is excluded so it never false-positives as untracked
+    work. Returns the message payload only (timestamp/metadata stripped)."""
     cutoff = now - timedelta(seconds=window_sec)
     hits = []
     for line in text.splitlines():
@@ -338,7 +352,8 @@ def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_
                 ts = None
             if ts and ts < cutoff:
                 continue
-        hits.append(line.strip()[:200])
+        payload = _message_payload(line)
+        hits.append((payload or line.strip())[:200])
     return hits
 
 
