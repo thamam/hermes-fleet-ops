@@ -237,7 +237,9 @@ def fetch_open_tasks(base_url: str, token: str, project_id: int) -> list:
             raise ValueError(f"unexpected Vikunja payload (not a list): {type(batch).__name__}")
         if not batch:
             break
-        tasks.extend(t for t in batch if isinstance(t, dict) and not t.get("done"))
+        # Keep open dict tasks AND any non-dict items (so validate_tasks can
+        # quarantine the malformed ones); only genuinely-done dicts are dropped.
+        tasks.extend(t for t in batch if not (isinstance(t, dict) and t.get("done")))
         if len(batch) < 50:
             break
     return tasks
@@ -255,7 +257,11 @@ def validate_tasks(raw_tasks: list) -> tuple[list, list]:
     missing/null id or a present-but-unparseable due_date."""
     good, bad = [], []
     for t in raw_tasks:
-        tid = t.get("id") if isinstance(t, dict) else None
+        if not isinstance(t, dict):
+            bad.append({"id": None, "reason": f"non-object task payload: {t!r}",
+                        "ts": now_iso()})
+            continue
+        tid = t.get("id")
         if not tid:
             bad.append({"id": tid, "reason": "missing/null id", "ts": now_iso()})
             continue
@@ -381,7 +387,10 @@ def count_untracked(candidates: list, open_tasks: list) -> int:
             untracked += 1
             continue
         nums = {w for w in words if w.isdigit()}
-        need = (len(words) + 1) // 2  # majority of the candidate's tokens
+        # Short requests (1-2 tokens) must match in full — a single shared word
+        # is not coverage ("deploy build" vs "deploy backend"). Longer requests
+        # need a majority, so an extra verb doesn't block a real identifier match.
+        need = len(words) if len(words) <= 2 else (len(words) + 1) // 2
         covered = any(
             len(words & ts) >= need and nums <= ts for ts in title_sets
         )

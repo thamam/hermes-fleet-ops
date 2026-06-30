@@ -78,6 +78,14 @@ def test_validate_tasks_quarantines_non_string_due_date():
     assert "non-string due_date" in bad[0]["reason"]
 
 
+def test_validate_tasks_quarantines_non_object_payload():
+    # Codex round-11 P2: a non-object item (e.g. null) must be quarantined, not
+    # silently dropped (which would let a tracked task be falsely marked done).
+    good, bad = fd.validate_tasks([None, {"id": 7, "title": "ok"}])
+    assert [t["id"] for t in good] == [7]
+    assert len(bad) == 1 and bad[0]["id"] is None
+
+
 def test_save_quarantine_merges_by_id(tmp_path):
     p = tmp_path / "q.json"
     n1 = fd.save_quarantine(p, fd.load_quarantine(p), [{"id": 1, "reason": "a"}])
@@ -208,6 +216,35 @@ def test_count_untracked_single_shared_verb_not_enough():
     # Codex round-10 P2: a single shared generic word is not coverage.
     assert fd.count_untracked(["deploy mobile app"], [{"title": "deploy backend"}]) == 1
     assert fd.count_untracked(["deploy mobile app"], [{"title": "deploy mobile app"}]) == 0
+
+
+def test_count_untracked_two_token_needs_full_match():
+    # Codex round-11 P2: "deploy build" is not covered by "deploy backend".
+    assert fd.count_untracked(["deploy build"], [{"title": "deploy backend"}]) == 1
+    assert fd.count_untracked(["deploy build"], [{"title": "deploy build pipeline"}]) == 0
+
+
+def test_main_non_object_task_does_not_false_complete(monkeypatch, tmp_path, capsys):
+    # Codex round-11 P2: a null page item must route through the idless
+    # fail-closed path, preserving prior tracked tasks.
+    def _env(mp, tp):
+        mp.setenv("HERMES_PROFILE_NAME", "sentinel")
+        mp.setenv("HERMES_HOME", str(tp))
+        mp.setenv("VIKUNJA_API_TOKEN", "tok")
+        mp.setenv("VIKUNJA_API_URL", "https://vik.example/api/v1")
+        mp.setenv("FLEET_DISPATCHER_PROJECT_IDS", "4")
+        mp.setenv("FLEET_DISPATCHER_STATE_DIR", str(tp / "state"))
+    _env(monkeypatch, tmp_path)
+    fd.save_state(tmp_path / "state" / "state.json",
+                  {"tasks": {"5": {"updated": "2026-06-30T10:00:00Z", "title": "live"}}})
+    served = {1: [[None]]}
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: served[1].pop(0) if served[1] else [])
+    fd.main([])
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["noticed_done"] == 0
+    assert out["idless_quarantine"] is True
+    assert "5" in fd.load_state(tmp_path / "state" / "state.json")["tasks"]
 
 
 def test_scan_gateway_log_keeps_work_mentioning_status_check():
