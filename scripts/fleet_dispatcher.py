@@ -192,7 +192,12 @@ def fetch_open_tasks(base_url: str, token: str, project_id: int) -> list:
             f"?page={page}&per_page=50&filter=done%20%3D%20false"
         )
         batch = _http_get_json(url, token)
-        if not isinstance(batch, list) or not batch:
+        if not isinstance(batch, list):
+            # A non-list 200 (error envelope / version-wrapped page) must NOT be
+            # read as "no tasks" — that would falsely mark everything done. Raise
+            # so main()'s except path flags vik_unreachable and preserves state.
+            raise ValueError(f"unexpected Vikunja payload (not a list): {type(batch).__name__}")
+        if not batch:
             break
         tasks.extend(t for t in batch if isinstance(t, dict) and not t.get("done"))
         if len(batch) < 50:
@@ -388,6 +393,9 @@ def main(argv=None) -> int:
             return 0
 
         bad_ids = {str(e["id"]) for e in all_bad if e.get("id")}
+        # An id-less malformed record can't be correlated to the prior task it
+        # represents, so we cannot conclude any disappeared task is done.
+        idless = any(not e.get("id") for e in all_bad)
         changes = detect_changes(prev_tasks, all_good, bad_ids)
         quarantined = save_quarantine(quarantine_path, load_quarantine(quarantine_path), all_bad)
 
@@ -397,9 +405,15 @@ def main(argv=None) -> int:
         untracked = max(0, len(candidates) - tracked)
 
         # Carry forward known-but-malformed tasks so a transient bad record never
-        # drops them from tracking (and they stay out of done detection).
+        # drops them from tracking (and they stay out of done detection). When an
+        # id-less malformed record is present, fail closed: suppress done entirely
+        # and preserve every prior task so none is falsely completed or dropped.
+        carry = set(bad_ids)
+        if idless:
+            changes["done"] = []
+            carry |= set(prev_tasks)
         new_snapshot = snapshot_tasks(all_good)
-        for tid in bad_ids:
+        for tid in carry:
             if tid in prev_tasks and tid not in new_snapshot:
                 new_snapshot[tid] = prev_tasks[tid]
         state["tasks"] = new_snapshot
@@ -408,6 +422,8 @@ def main(argv=None) -> int:
 
         sitrep = build_sitrep(profile, projects, open_total, changes,
                               untracked, quarantined, False)
+        if idless:
+            sitrep["idless_quarantine"] = True  # done-detection suppressed this run
         print(json.dumps(sitrep, separators=(",", ":")))
 
         if args.verbose:

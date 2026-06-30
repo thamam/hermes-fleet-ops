@@ -219,6 +219,40 @@ def test_main_quarantines_malformed_task(monkeypatch, tmp_path, capsys):
     assert len(q) == 1
 
 
+def test_fetch_open_tasks_raises_on_non_list(monkeypatch):
+    # Codex round-3 P2: a non-list 200 must raise, not be read as end-of-page.
+    monkeypatch.setattr(fd, "_http_get_json", lambda url, token: {"error": "boom"})
+    with pytest.raises(ValueError):
+        fd.fetch_open_tasks("https://vik/api/v1", "tok", 4)
+
+
+def test_main_non_list_payload_preserves_state(monkeypatch, tmp_path, capsys):
+    _env(monkeypatch, tmp_path)
+    fd.save_state(tmp_path / "state" / "state.json", {"tasks": {"1": {"updated": "x"}}})
+    monkeypatch.setattr(fd, "_http_get_json", lambda url, token: {"items": []})
+    fd.main([])
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["vik_unreachable"] is True
+    assert out["noticed_done"] == 0
+    assert fd.load_state(tmp_path / "state" / "state.json")["tasks"] == {"1": {"updated": "x"}}
+
+
+def test_main_idless_malformed_suppresses_done_and_preserves_state(monkeypatch, tmp_path, capsys):
+    # Codex round-3 P2: an id-less malformed task must not turn a tracked task
+    # into a false completion, and must not drop it from the snapshot.
+    _env(monkeypatch, tmp_path)
+    fd.save_state(tmp_path / "state" / "state.json",
+                  {"tasks": {"5": {"updated": "2026-06-30T10:00:00Z", "title": "live"}}})
+    served = {1: [[{"id": None, "title": "malformed"}]]}
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: served[1].pop(0) if served[1] else [])
+    fd.main([])
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["noticed_done"] == 0
+    assert out["idless_quarantine"] is True
+    assert "5" in fd.load_state(tmp_path / "state" / "state.json")["tasks"]
+
+
 def test_main_never_prints_token(monkeypatch, tmp_path, capsys):
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr(fd, "_http_get_json", lambda url, token: [])
