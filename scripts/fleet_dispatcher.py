@@ -340,7 +340,10 @@ def _env_projects() -> tuple[list, str]:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verbose", action="store_true", help="emit a per-task summary too")
-    args = parser.parse_args(argv)
+    # parse_known_args (not parse_args) so unrecognized flags passed by the cron
+    # launcher (e.g. --deliver origin --no-agent) are ignored rather than causing
+    # an argparse exit-2 with no sitrep, which would break the cron contract.
+    args, _ = parser.parse_known_args(argv)
 
     profile = os.environ.get("HERMES_PROFILE_NAME", "unknown")
     hermes_home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
@@ -399,10 +402,11 @@ def main(argv=None) -> int:
         changes = detect_changes(prev_tasks, all_good, bad_ids)
         quarantined = save_quarantine(quarantine_path, load_quarantine(quarantine_path), all_bad)
 
+        # Best-effort: inbound, non-status work lines seen in the last hour.
+        # Reported independently of task churn — subtracting unrelated new/updated
+        # tasks would mask a real 1:1 gap when both happen in the same tick.
         candidates = scan_gateway_log(read_gateway_log_tail(gateway_log), datetime.now(UTC))
-        # Treat work covered by tasks that moved this tick as already tracked.
-        tracked = len(changes["new"]) + len(changes["updated"])
-        untracked = max(0, len(candidates) - tracked)
+        untracked = len(candidates)
 
         # Carry forward known-but-malformed tasks so a transient bad record never
         # drops them from tracking (and they stay out of done detection). When an

@@ -253,6 +253,32 @@ def test_main_idless_malformed_suppresses_done_and_preserves_state(monkeypatch, 
     assert "5" in fd.load_state(tmp_path / "state" / "state.json")["tasks"]
 
 
+def test_main_ignores_unknown_cron_flags(monkeypatch, tmp_path, capsys):
+    # Codex round-4 P2: cron launcher flags must not crash the parser (exit 2).
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setattr(fd, "_http_get_json", lambda url, token: [])
+    rc = fd.main(["--deliver", "origin", "--no-agent"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["profile"] == "sentinel"
+
+
+def test_main_untracked_independent_of_task_churn(monkeypatch, tmp_path, capsys):
+    # Codex round-4 P2: an unrelated new task must NOT mask an untracked inbound
+    # work line in the same tick.
+    _env(monkeypatch, tmp_path)
+    log = tmp_path / "logs" / "gateway.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("inbound message from telegram: please deploy the new build\n")
+    served = {1: [[{"id": 9, "title": "unrelated", "updated": "2026-06-30T10:00:00Z"}]]}
+    monkeypatch.setattr(fd, "_http_get_json",
+                        lambda url, token: served[1].pop(0) if served[1] else [])
+    fd.main([])
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["noticed_new"] == 1
+    assert out["untracked_candidates"] == 1  # not zeroed by the unrelated new task
+
+
 def test_main_never_prints_token(monkeypatch, tmp_path, capsys):
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr(fd, "_http_get_json", lambda url, token: [])
