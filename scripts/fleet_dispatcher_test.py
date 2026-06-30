@@ -156,6 +156,14 @@ def test_count_untracked_matches_open_task_title():
     assert fd.count_untracked(cands, [{"title": "Fix login bug"}]) == 1
 
 
+def test_count_untracked_matches_short_acronym_tasks():
+    # Codex round-7 P2: short ops identifiers (CI, DB, API, PR 8) must match.
+    assert fd.count_untracked(["inbound message: please fix CI"], [{"title": "Fix CI"}]) == 0
+    assert fd.count_untracked(["inbound message: DB lag"], [{"title": "DB lag"}]) == 0
+    assert fd.count_untracked(["inbound message: ship PR 8"], [{"title": "PR 8"}]) == 0
+    assert fd.count_untracked(["inbound message: please fix CI"], [{"title": "Deploy build"}]) == 1
+
+
 def test_scan_gateway_log_keeps_work_containing_status_word():
     # Codex round-6 P2: "status" inside a real request is NOT a status check.
     now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)

@@ -75,6 +75,10 @@ STOPWORDS = frozenset({
     "would", "telegram", "whatsapp", "signal", "slack", "discord", "gateway",
     "agent", "user", "this", "that", "with", "your", "have", "need", "want",
     "there", "here", "about", "hello",
+    # short filler — kept out so 2+ char acronyms (CI, DB, UI, PR, QA) survive
+    "fix", "new", "the", "run", "add", "see", "get", "for", "and", "not",
+    "but", "was", "can", "all", "any", "out", "off", "via", "let", "its",
+    "has", "you", "are",
 })
 
 
@@ -338,15 +342,26 @@ def scan_gateway_log(text: str, now: datetime, window_sec: int = GATEWAY_WINDOW_
     return hits
 
 
+def _significant_words(text: str) -> set:
+    """Work-identifying tokens: 2+ char alphanumerics minus generic filler. The
+    2-char floor keeps ops acronyms (CI, DB, UI, PR, QA); the stopword set drops
+    channel/greeting noise so they don't drive matches either way."""
+    return set(re.findall(r"[a-z0-9]{2,}", text.lower())) - STOPWORDS
+
+
 def count_untracked(candidates: list, open_tasks: list) -> int:
-    """Best-effort: a candidate inbound line counts as untracked only if no open
-    task title shares a work-identifying word with it. Generic channel/greeting
-    words are ignored so they neither inflate nor mask the signal."""
-    titles = " \n".join(str(t.get("title", "")) for t in open_tasks).lower()
+    """Best-effort: a candidate inbound line counts as untracked only if it shares
+    no work-identifying word with any open task title. Matches whole tokens (set
+    intersection, not substring) so short acronyms don't spuriously match longer
+    words. A candidate with no significant tokens is surfaced (can't confirm it
+    is covered) — erring toward board discipline."""
+    title_words = set()
+    for t in open_tasks:
+        title_words |= _significant_words(str(t.get("title", "")))
     untracked = 0
     for line in candidates:
-        words = set(re.findall(r"[a-z0-9]{4,}", line.lower())) - STOPWORDS
-        if not any(w in titles for w in words):
+        words = _significant_words(line)
+        if not words or not (words & title_words):
             untracked += 1
     return untracked
 
