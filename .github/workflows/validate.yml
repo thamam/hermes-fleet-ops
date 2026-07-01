@@ -12,6 +12,7 @@ on:
       - "scripts/validate-config.py"
       - "scripts/fleet_dispatcher.py"
       - "scripts/fleet_dispatcher_test.py"
+      - "scripts/telegram_dedup_patch_test.py"
       - ".github/workflows/validate.yml"
   push:
     branches: [main]
@@ -49,3 +50,6 @@ jobs:
 
       - name: Run fleet_dispatcher unit tests
         run: python3 -m pytest scripts/fleet_dispatcher_test.py -q
+
+      - name: Run telegram dedup patch regression tests
+        run: python3 -m pytest scripts/telegram_dedup_patch_test.py -q
