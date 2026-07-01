@@ -1,8 +1,11 @@
-From 852ee89fec5a5b138b57c29e68ecc6aada2c45e4 Mon Sep 17 00:00:00 2001
+From 629eab0223a629de3b8c93fc69b53a2db6343a74 Mon Sep 17 00:00:00 2001
 From: Tomer Hamam <tomer@neuronbox.ai>
-Date: Sat, 27 Jun 2026 14:52:31 +0300
+Date: Wed, 1 Jul 2026 12:31:34 +0300
 Subject: [PATCH] fix(telegram): dedup inbound updates by update_id to prevent
  duplicate replies
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Adds a 500-entry LRU deque of recently-processed update_ids per adapter.
 Polling-conflict retries use drop_pending_updates=False and can re-fetch
@@ -10,43 +13,48 @@ the same window of updates; without this dedup, the agent loop runs once
 per retry and the user sees 2-5+ copies of the same reply. Hits cron-fired
 messages especially because their entire response block dups (no chunking).
 
+_is_duplicate_update lazy-initializes the deque so adapters constructed in
+tests that bypass __init__ (e.g. TelegramAdapter.__new__) don't raise
+AttributeError. __init__ still sets it for the normal hot path.
+
 No behavior change for normal traffic. Memory bound: ~500 ints per bot.
 # Status: requires-upstream-merge
 # Origin: Fleet patch (Mac/Nigel) — see chat 2026-06-27 for context
 # Why: inbound update_id dedup; prevents polling-conflict-retry-caused dup replies
-
 ---
- gateway/platforms/telegram.py | 37 +++++++++++++++++++++++++++++++++++
- 1 file changed, 37 insertions(+)
+ plugins/platforms/telegram/adapter.py | 50 +++++++++++++++++++++++++++
+ 1 file changed, 50 insertions(+)
 
-diff --git a/gateway/platforms/telegram.py b/gateway/platforms/telegram.py
-index aed7b71af..fa4848ba7 100644
---- a/gateway/platforms/telegram.py
-+++ b/gateway/platforms/telegram.py
-@@ -16,6 +16,7 @@ import os
- import tempfile
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+index 75d8c42..2bfe853 100644
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -15,6 +15,7 @@ import logging
+ import os
  import html as _html
  import re
 +from collections import deque
  from datetime import datetime, timezone
  from typing import Dict, List, Optional, Set, Any
  
-@@ -461,6 +462,10 @@ class TelegramAdapter(BasePlatformAdapter):
-         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+@@ -415,6 +416,12 @@ class TelegramAdapter(BasePlatformAdapter):
+         self._drop_delayed_deliveries = False
          self._polling_error_task: Optional[asyncio.Task] = None
          self._polling_conflict_count: int = 0
-+        # # hermes-fleet-patch: telegram-update-dedup : drop already-seen inbound update_ids
-+        # caused by polling-conflict retries that re-fetch the same window of updates.
++        # hermes-fleet-patch: telegram-update-dedup — drop already-seen inbound
++        # update_ids caused by polling-conflict retries that re-fetch the same
++        # window of updates. Bounded LRU keeps memory predictable. See
++        # _is_duplicate_update for the lazy-init fallback used by tests that
++        # construct the adapter without running __init__.
 +        self._seen_update_ids: deque = deque(maxlen=500)
-+
          self._polling_network_error_count: int = 0
          self._polling_error_callback_ref = None
-         # After sustained reconnect storms the PTB httpx pool can return
-@@ -5887,6 +5892,30 @@ class TelegramAdapter(BasePlatformAdapter):
+         self._polling_heartbeat_task: Optional[asyncio.Task] = None
+@@ -6846,6 +6853,41 @@ class TelegramAdapter(BasePlatformAdapter):
              except Exception as e:
                  logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, e)
  
-+    # # hermes-fleet-patch: telegram-update-dedup
++    # hermes-fleet-patch: telegram-update-dedup
 +    def _is_duplicate_update(self, update) -> bool:
 +        """Return True if this update_id has already been processed.
 +
@@ -56,7 +64,9 @@ index aed7b71af..fa4848ba7 100644
 +        inbound message, producing duplicate Telegram replies — the dup bug.
 +
 +        Bounded LRU (maxlen=500) keeps memory predictable; 500 covers >>1h of
-+        normal traffic per bot.
++        normal traffic per bot. The deque is lazy-initialized here so adapters
++        constructed by tests that bypass ``__init__`` (e.g.
++        ``TelegramAdapter.__new__(TelegramAdapter)``) don't raise AttributeError.
 +        """
 +        try:
 +            uid = getattr(update, "update_id", None)
@@ -64,51 +74,60 @@ index aed7b71af..fa4848ba7 100644
 +            uid = None
 +        if uid is None:
 +            return False
-+        if uid in self._seen_update_ids:
-+            logger.info("[%s] Dropping duplicate inbound update_id=%d", self.name, uid)
++        seen = getattr(self, "_seen_update_ids", None)
++        if seen is None:
++            seen = deque(maxlen=500)
++            self._seen_update_ids = seen
++        if uid in seen:
++            # getattr guard: self.name reads self.platform, which is unset on
++            # adapters constructed without __init__ (test bypass path).
++            logger.info(
++                "[%s] Dropping duplicate inbound update_id=%d",
++                getattr(self, "name", "telegram"), uid,
++            )
 +            return True
-+        self._seen_update_ids.append(uid)
++        seen.append(uid)
 +        return False
 +
      def _effective_update_message(self, update: Update) -> Optional[Message]:
          """Return the message-like payload for normal messages and channel posts.
  
-@@ -5898,6 +5927,8 @@ class TelegramAdapter(BasePlatformAdapter):
-         return getattr(update, "effective_message", None) or getattr(update, "message", None)
- 
-     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@@ -6863,6 +6905,8 @@ class TelegramAdapter(BasePlatformAdapter):
+         rapid successive text messages from the same user/chat and aggregate
+         them into a single MessageEvent before dispatching.
+         """
 +        if self._is_duplicate_update(update):
 +            return
-         """Handle incoming text messages.
- 
-         Telegram clients split long messages into multiple updates.  Buffer
-@@ -5920,6 +5951,8 @@ class TelegramAdapter(BasePlatformAdapter):
-         self._enqueue_text_event(event)
- 
-     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-+        if self._is_duplicate_update(update):
-+            return
-         """Handle incoming command messages."""
          msg = self._effective_update_message(update)
          if not msg or not msg.text:
-@@ -5935,6 +5968,8 @@ class TelegramAdapter(BasePlatformAdapter):
-         await self.handle_message(event)
+             return
+@@ -6891,6 +6935,8 @@ class TelegramAdapter(BasePlatformAdapter):
+ 
+     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+         """Handle incoming command messages."""
++        if self._is_duplicate_update(update):
++            return
+         msg = self._effective_update_message(update)
+         if not msg or not msg.text:
+             return
+@@ -6913,6 +6959,8 @@ class TelegramAdapter(BasePlatformAdapter):
  
      async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+         """Handle incoming location/venue pin messages."""
 +        if self._is_duplicate_update(update):
 +            return
-         """Handle incoming location/venue pin messages."""
          msg = self._effective_update_message(update)
          if not msg:
-@@ -6118,6 +6153,8 @@ class TelegramAdapter(BasePlatformAdapter):
-         self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(self._flush_photo_batch(batch_key))
+             return
+@@ -7117,6 +7165,8 @@ class TelegramAdapter(BasePlatformAdapter):
  
      async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+         """Handle incoming media messages, downloading images to local cache."""
 +        if self._is_duplicate_update(update):
 +            return
-         """Handle incoming media messages, downloading images to local cache."""
          if not update.message:
              return
+         if not self._is_user_authorized_from_message(update.message):
 -- 
-2.50.1 (Apple Git-155)
+2.51.2
 
